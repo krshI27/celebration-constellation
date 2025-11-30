@@ -3,6 +3,8 @@
 This module implements robust point pattern matching using RANSAC to find
 the best-fitting star constellation for detected circle centers, with
 correction for star density to avoid bias toward dense regions.
+
+Includes smart point sampling to handle large datasets efficiently.
 """
 
 from typing import Optional
@@ -17,6 +19,52 @@ from drinking_galaxies.visibility import (
     get_example_cities,
     get_viewing_regions,
 )
+
+
+def sample_points_spatially(
+    points: np.ndarray,
+    max_points: int = 50,
+) -> np.ndarray:
+    """Sample points to preserve spatial distribution.
+
+    Uses grid-based sampling to ensure good coverage of the pattern.
+
+    Args:
+        points: Point coordinates (N, 2)
+        max_points: Maximum points to return
+
+    Returns:
+        Sampled points with preserved spatial distribution
+    """
+    if len(points) <= max_points:
+        return points
+
+    # Create a grid over the point cloud
+    min_coords = points.min(axis=0)
+    max_coords = points.max(axis=0)
+    ranges = max_coords - min_coords
+
+    # Determine grid size
+    grid_size = int(np.ceil(np.sqrt(max_points)))
+
+    # Assign points to grid cells
+    cell_indices = ((points - min_coords) / ranges * (grid_size - 1)).astype(int)
+
+    # Sample one point from each occupied cell
+    sampled = []
+    cell_dict = {}
+
+    for i, cell in enumerate(cell_indices):
+        cell_key = tuple(cell)
+        if cell_key not in cell_dict:
+            cell_dict[cell_key] = i
+            sampled.append(i)
+
+    # If we still have too many, randomly sample
+    if len(sampled) > max_points:
+        sampled = np.random.choice(sampled, max_points, replace=False)
+
+    return points[sampled]
 
 
 def normalize_points(points: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
@@ -225,8 +273,11 @@ def match_to_sky_regions(
     num_iterations: int = 1000,
     inlier_threshold: float = 0.05,
     identify_constellations: bool = True,
+    max_points: int = 50,
 ) -> list[dict]:
     """Match circle centers to multiple sky regions and rank by score.
+
+    Automatically applies spatial sampling if too many circles detected.
 
     Args:
         circle_centers: Detected circle centers (N, 2)
@@ -234,6 +285,7 @@ def match_to_sky_regions(
         num_iterations: RANSAC iterations per region
         inlier_threshold: Distance threshold for matches
         identify_constellations: Whether to identify constellation names
+        max_points: Maximum circle centers to use (default: 50)
 
     Returns:
         Sorted list of match results with sky region info
@@ -256,6 +308,15 @@ def match_to_sky_regions(
         ...     print(f"Constellation: {info['full_name']}")
     """
     results = []
+
+    # Apply spatial sampling if too many points
+    original_count = len(circle_centers)
+    if original_count > max_points:
+        circle_centers = sample_points_spatially(circle_centers, max_points)
+        print(
+            f"Sampled {len(circle_centers)} points from {original_count} "
+            "for efficient matching"
+        )
 
     # Initialize constellation catalog if needed
     constellation_catalog = None

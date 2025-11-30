@@ -48,18 +48,26 @@ def initialize_session_state():
         st.session_state.star_catalog = StarCatalog()
 
 
-def process_uploaded_image(uploaded_file, min_radius: int, max_radius: int):
-    """Process uploaded image and detect circles."""
+def process_uploaded_image(
+    uploaded_file,
+    min_radius: int,
+    max_radius: int,
+    max_circles: int = 50,
+    quality_threshold: float = 0.15,
+):
+    """Process uploaded image and detect circles with quality filtering."""
     # Save uploaded file temporarily
     temp_path = Path("/tmp/uploaded_image.jpg")
     with open(temp_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
-    # Detect circles
+    # Detect circles with quality filtering
     image, circles, centers = detect_and_extract(
         temp_path,
         min_radius=min_radius,
         max_radius=max_radius,
+        max_circles=max_circles,
+        quality_threshold=quality_threshold,
     )
 
     st.session_state.uploaded_image = image
@@ -169,6 +177,28 @@ def main():
             step=10,
         )
 
+        max_circles = st.slider(
+            "Max Circles",
+            min_value=10,
+            max_value=100,
+            value=50,
+            step=5,
+            help="Maximum number of circles to detect (higher quality circles preferred)",
+        )
+
+        quality_threshold = st.slider(
+            "Quality Threshold",
+            min_value=0.0,
+            max_value=0.5,
+            value=0.15,
+            step=0.05,
+            help="Minimum quality score (0.0-0.5). Higher = stricter filtering",
+        )
+
+        st.divider()
+
+        st.header("Matching Settings")
+
         num_regions = st.slider(
             "Sky Regions to Search",
             min_value=50,
@@ -198,7 +228,11 @@ def main():
         # Process image
         if st.session_state.uploaded_image is None:
             image, circles, centers = process_uploaded_image(
-                uploaded_file, min_radius, max_radius
+                uploaded_file,
+                min_radius,
+                max_radius,
+                max_circles,
+                quality_threshold,
             )
 
             if circles is None:
@@ -207,7 +241,7 @@ def main():
                 )
                 return
 
-            st.success(f"Detected {len(circles)} circular objects!")
+            st.success(f"✅ Detected {len(circles)} high-quality circular objects!")
 
         # Display detection results
         col1, col2 = st.columns(2)
@@ -311,9 +345,7 @@ def main():
                                 lat_str += "N" if city["lat"] >= 0 else "S"
                                 lon_str = f"{abs(city['lon']):.1f}°"
                                 lon_str += "E" if city["lon"] >= 0 else "W"
-                                st.markdown(
-                                    f"• {city['name']} ({lat_str}, {lon_str})"
-                                )
+                                st.markdown(f"• {city['name']} ({lat_str}, {lon_str})")
 
                         # Best viewing months
                         if (
