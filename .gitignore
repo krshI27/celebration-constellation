@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+PYTHON_ARGCOMPLETE_OK
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Conda environments
+conda-meta/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Claude Code local customizations (keep CLAUDE.md tracked, ignore local overrides)
+CLAUDE.local.md
+
+# IDE
+.vscode/launch.json
+.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+.docker/data/
+
+# Data files - exclude entire data directory from version control
+data/
+# Keep data directory structure in repo but exclude contents
+!data/
+!data/*/
+!data/*/README.md
+
+# Spec-kit files (keep structure but content is generated)
+# The .specify/ folder structure should be tracked
+!.specify/
+!.specify/*/
+!.specify/*/README.md
+!.specify/constitution.md
+
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Documentation
+docs/_build/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Project specific
+# Add your project-specific ignores here
