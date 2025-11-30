@@ -9,7 +9,6 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from PIL import Image
 
 
 def load_image(image_path: Path) -> np.ndarray:
@@ -149,7 +148,7 @@ def detect_and_extract(
         min_distance: Minimum distance between circle centers
 
     Returns:
-        Tuple of (original_image, circles, centers)
+        tuple of (original_image, circles, centers)
 
     Example:
         >>> image, circles, centers = detect_and_extract(Path("table.jpg"))

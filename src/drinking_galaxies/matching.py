@@ -9,7 +9,6 @@ from typing import Optional
 
 import numpy as np
 from scipy.spatial import distance_matrix
-from scipy.spatial.transform import Rotation
 
 
 def normalize_points(points: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:

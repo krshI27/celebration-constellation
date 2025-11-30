@@ -88,6 +88,7 @@ cp .config/.env.example .env
 ```
 
 Key settings:
+
 - `MIN_CIRCLE_RADIUS`: Minimum circle size (default: 20)
 - `MAX_CIRCLE_RADIUS`: Maximum circle size (default: 200)
 - `RANSAC_ITERATIONS`: Matching iterations (default: 1000)
@@ -96,16 +97,19 @@ Key settings:
 ## Troubleshooting
 
 ### No circles detected
+
 - Adjust `Min Circle Radius` and `Max Circle Radius` sliders
 - Ensure objects are reasonably circular in the photo
 - Try different lighting conditions
 
 ### No constellation matches
+
 - Increase "Sky Regions to Search"
 - Check that at least 3-4 circular objects are detected
 - Verify circle centers form a distinctive pattern
 
 ### Slow performance
+
 - Reduce "Sky Regions to Search"
 - Lower RANSAC iterations in `.env`
 - Use smaller images (resize before upload)

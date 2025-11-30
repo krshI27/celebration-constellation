@@ -8,11 +8,9 @@ This app provides an interactive interface for:
 """
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import streamlit as st
-from PIL import Image
 
 from drinking_galaxies.astronomy import StarCatalog
 from drinking_galaxies.detection import detect_and_extract, draw_circles
