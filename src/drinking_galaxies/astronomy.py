@@ -75,8 +75,28 @@ class StarCatalog:
             }
         )
 
-        # Remove stars without position data
-        catalog = catalog.dropna(subset=["ra", "dec"])
+        # Remove stars without position data (including empty strings)
+        catalog = catalog.replace("", np.nan)
+        catalog = catalog.dropna(subset=["ra", "dec", "magnitude"])
+
+        # Convert RA/Dec from sexagesimal to decimal degrees if needed
+        if catalog["ra"].dtype == object:  # String format
+            coords = SkyCoord(
+                ra=list(catalog["ra"].values),
+                dec=list(catalog["dec"].values),
+                unit=(u.hourangle, u.deg),
+            )
+            catalog["ra"] = coords.ra.deg
+            catalog["dec"] = coords.dec.deg
+
+        # Convert other numeric columns
+        numeric_cols = ["magnitude", "pm_ra", "pm_dec"]
+        for col in numeric_cols:
+            if col in catalog.columns:
+                catalog[col] = pd.to_numeric(catalog[col], errors="coerce")
+
+        # Remove any remaining rows with invalid data
+        catalog = catalog.dropna(subset=["ra", "dec", "magnitude"])
 
         # Save to cache
         catalog.to_csv(self.catalog_file, index=False)
