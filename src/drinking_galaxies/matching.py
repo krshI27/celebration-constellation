@@ -10,6 +10,8 @@ from typing import Optional
 import numpy as np
 from scipy.spatial import distance_matrix
 
+from drinking_galaxies.constellations import ConstellationCatalog
+
 
 def normalize_points(points: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
     """Normalize point cloud to zero mean and unit scale.
@@ -216,6 +218,7 @@ def match_to_sky_regions(
     sky_regions: list[dict],
     num_iterations: int = 1000,
     inlier_threshold: float = 0.05,
+    identify_constellations: bool = True,
 ) -> list[dict]:
     """Match circle centers to multiple sky regions and rank by score.
 
@@ -224,6 +227,7 @@ def match_to_sky_regions(
         sky_regions: List of dicts with 'ra', 'dec', 'stars', 'positions'
         num_iterations: RANSAC iterations per region
         inlier_threshold: Distance threshold for matches
+        identify_constellations: Whether to identify constellation names
 
     Returns:
         Sorted list of match results with sky region info
@@ -239,9 +243,18 @@ def match_to_sky_regions(
         ...     )
         ...     region['positions'] = positions
         >>> matches = match_to_sky_regions(circle_centers, regions)
-        >>> print(f"Best match: RA={matches[0]['ra']:.1f}, Score={matches[0]['score']:.2f}")
+        >>> m = matches[0]
+        >>> print(f"Best match: RA={m['ra']:.1f}, Score={m['score']:.2f}")
+        >>> if matches[0].get('constellation'):
+        ...     info = matches[0]['constellation_info']
+        ...     print(f"Constellation: {info['full_name']}")
     """
     results = []
+
+    # Initialize constellation catalog if needed
+    constellation_catalog = None
+    if identify_constellations:
+        constellation_catalog = ConstellationCatalog()
 
     for region in sky_regions:
         star_positions = region.get("positions")
@@ -263,6 +276,17 @@ def match_to_sky_regions(
                 "stars": region["stars"],
                 **match_result,
             }
+
+            # Add constellation identification
+            if constellation_catalog:
+                constellation_name = constellation_catalog.identify_constellation(
+                    region["ra"], region["dec"]
+                )
+                result["constellation"] = constellation_name
+                result["constellation_info"] = (
+                    constellation_catalog.get_constellation_info(constellation_name)
+                )
+
             results.append(result)
 
     # Sort by score (descending)

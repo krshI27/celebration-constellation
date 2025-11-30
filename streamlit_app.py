@@ -251,6 +251,17 @@ def main():
                         st.session_state.current_match_index
                     ]
 
+                    # Display constellation name if available
+                    if match.get("constellation_info"):
+                        info = match["constellation_info"]
+                        st.markdown(f"### ⭐ {info['full_name']} ({info['abbrev']})")
+                        st.caption(f"📐 Sky Area: {info['area_sq_deg']} sq. degrees")
+                        st.info(info["description"])
+                        st.divider()
+                    elif match.get("constellation"):
+                        st.markdown(f"### ⭐ Constellation: {match['constellation']}")
+                        st.divider()
+
                     st.metric(
                         "Match Score",
                         f"{match['score']:.2f}",

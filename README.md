@@ -4,7 +4,11 @@ Find your table's hidden constellation! Upload a photo of bottles, plates, and g
 
 ## Overview
 
-**Drinking Galaxies** detects circular objects (bottles, plates, glasses) in table photos and matches their spatial arrangement to star constellations visible from Earth using computer vision and RANSAC-based point cloud registration.
+**Drinking Galaxies** detects circular objects (bottles, plates, glasses) in table photos and matches their spatial arrangement to star constellations visible from Earth using computer vision and RANSAC-based point cloud registration. The app identifies constellation names using IAU official boundaries and provides educational information about each match.
+
+## Features
+
+✨ **NEW in v0.2.0**: Constellation name identification with full IAU constellation data
 
 ## What's Included
 
