@@ -152,10 +152,7 @@ class StarCatalog:
 
         # Try loading from local supplemental data first
         local_catalog_path = (
-            Path(__file__).parent.parent.parent
-            / "data"
-            / "supplemental"
-            / "catalog.gz"
+            Path(__file__).parent.parent.parent / "data" / "supplemental" / "catalog.gz"
         )
 
         if local_catalog_path.exists():

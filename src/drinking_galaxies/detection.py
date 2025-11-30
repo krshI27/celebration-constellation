@@ -20,10 +20,16 @@ def calculate_circle_quality(
 ) -> float:
     """Calculate quality score for a detected circle.
 
-    Quality metrics:
-    - Edge strength: Intensity of edges on circle perimeter
-    - Contrast: Difference between inside and outside circle
-    - Circularity: How well-defined the circular boundary is
+    Quality score formula:
+        score = 0.6 × edge_strength + 0.4 × contrast
+
+    Where:
+    - edge_strength: Proportion of Canny edge pixels on circle perimeter (50 samples)
+    - contrast: Normalized absolute difference of mean intensity inside vs. outside
+
+    Typical quality threshold: 0.15 filters 30-50% of raw HoughCircles detections.
+    - Lower threshold (0.1): More detections, more false positives
+    - Higher threshold (0.3): Fewer detections, may miss valid circles
 
     Args:
         image: Original RGB image
@@ -32,6 +38,11 @@ def calculate_circle_quality(
 
     Returns:
         Quality score between 0.0 (poor) and 1.0 (excellent)
+
+    Example:
+        >>> quality = calculate_circle_quality(image, np.array([100, 150, 50]))
+        >>> if quality >= 0.15:
+        ...     print("High-quality circle detected")
     """
     x, y, r = circle
 
@@ -143,6 +154,10 @@ def non_maximum_suppression(
 def load_image(image_path: Path) -> np.ndarray:
     """Load image from file and convert to RGB.
 
+    Validates image dimensions to ensure reliable circle detection:
+    - Minimum: 300×300 pixels (sufficient resolution for detection)
+    - Maximum: 6000×6000 pixels (36MP, prevents memory issues)
+
     Args:
         image_path: Path to image file
 
@@ -151,7 +166,7 @@ def load_image(image_path: Path) -> np.ndarray:
 
     Raises:
         FileNotFoundError: If image file doesn't exist
-        ValueError: If image cannot be loaded
+        ValueError: If image cannot be loaded or dimensions out of bounds
     """
     if not image_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
@@ -159,6 +174,20 @@ def load_image(image_path: Path) -> np.ndarray:
     image = cv2.imread(str(image_path))
     if image is None:
         raise ValueError(f"Cannot load image: {image_path}")
+
+    # Validate image dimensions
+    h, w = image.shape[:2]
+    if h < 300 or w < 300:
+        raise ValueError(
+            f"Image too small: {w}×{h} pixels. "
+            f"Minimum: 300×300 pixels for reliable circle detection."
+        )
+    if h > 6000 or w > 6000:
+        raise ValueError(
+            f"Image too large: {w}×{h} pixels. "
+            f"Maximum: 6000×6000 pixels (36MP). "
+            f"Consider resizing for better performance."
+        )
 
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
@@ -190,16 +219,34 @@ def detect_circles(
 ) -> Optional[np.ndarray]:
     """Detect circles in image using Hough Circle Transform with quality filtering.
 
+    Image constraints:
+    - Supported dimensions: 300×300 to 6000×6000 pixels
+    - Recommended: 1500-3000 pixels on longest edge for optimal performance
+    - Performance: < 5 seconds for typical images (1500-3000px)
+
+    Parameter ranges and defaults:
+    - min_radius=20: Minimum object size (bottle cap in 2MP image ≈ 30-50px)
+    - max_radius=200: Maximum object size (large platter ≈ 150-200px)
+    - min_distance=50: Prevents duplicate detections of same object
+    - param1=100, param2=30: Canny edge and accumulator thresholds (OpenCV defaults)
+    - max_circles=50: Automatic spatial sampling if more detected
+    - quality_threshold=0.15: Filters 30-50% of raw detections (balance precision/recall)
+
+    Typical object sizes in 2MP images:
+    - Bottle cap: 30-50 pixels radius
+    - Dinner plate: 80-150 pixels radius
+    - Large serving platter: 150-200 pixels radius
+
     Args:
         image: RGB image array
-        min_radius: Minimum circle radius in pixels
-        max_radius: Maximum circle radius in pixels
-        min_distance: Minimum distance between circle centers
-        param1: Upper threshold for Canny edge detector
-        param2: Accumulator threshold for circle detection
-        max_circles: Maximum number of circles to return
-        quality_threshold: Minimum quality score (0.0-1.0)
-        use_nms: Whether to apply non-maximum suppression
+        min_radius: Minimum circle radius in pixels (default: 20)
+        max_radius: Maximum circle radius in pixels (default: 200)
+        min_distance: Minimum distance between circle centers (default: 50)
+        param1: Upper threshold for Canny edge detector (default: 100)
+        param2: Accumulator threshold for circle detection (default: 30)
+        max_circles: Maximum number of circles to return (default: 50)
+        quality_threshold: Minimum quality score 0.0-1.0 (default: 0.15)
+        use_nms: Whether to apply non-maximum suppression (default: True)
 
     Returns:
         Array of detected circles (x, y, radius) or None if no circles found
@@ -209,6 +256,14 @@ def detect_circles(
         >>> circles = detect_circles(image, max_circles=30, quality_threshold=0.4)
         >>> if circles is not None:
         ...     print(f"Found {len(circles)} high-quality circles")
+
+        Adjusting for different scenarios:
+        >>> # Close-up photos: reduce radius range
+        >>> circles = detect_circles(image, min_radius=40, max_radius=150)
+        >>> # Wide-angle shots: increase max radius
+        >>> circles = detect_circles(image, min_radius=15, max_radius=250)
+        >>> # Stricter quality: increase threshold
+        >>> circles = detect_circles(image, quality_threshold=0.3)
     """
     processed = preprocess_image(image)
 

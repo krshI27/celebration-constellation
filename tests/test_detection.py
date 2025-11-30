@@ -22,6 +22,62 @@ def test_load_image_nonexistent_file():
         load_image(fake_path)
 
 
+def test_load_image_too_small(tmp_path):
+    """Test that image smaller than 300x300 raises ValueError."""
+    import cv2
+
+    # Create 200x200 test image (below minimum)
+    small_image = np.zeros((200, 200, 3), dtype=np.uint8)
+    image_path = tmp_path / "small_image.jpg"
+    cv2.imwrite(str(image_path), small_image)
+
+    with pytest.raises(ValueError, match="Image too small"):
+        load_image(image_path)
+
+
+def test_load_image_too_large(tmp_path):
+    """Test that image larger than 6000x6000 raises ValueError."""
+    import cv2
+
+    # Create 7000x7000 test image (above maximum)
+    large_image = np.zeros((7000, 7000, 3), dtype=np.uint8)
+    image_path = tmp_path / "large_image.jpg"
+    cv2.imwrite(str(image_path), large_image)
+
+    with pytest.raises(ValueError, match="Image too large"):
+        load_image(image_path)
+
+
+def test_load_image_minimum_size(tmp_path):
+    """Test that 300x300 image loads successfully."""
+    import cv2
+
+    # Create 300x300 test image (exactly minimum)
+    min_image = np.ones((300, 300, 3), dtype=np.uint8) * 128
+    image_path = tmp_path / "min_image.jpg"
+    cv2.imwrite(str(image_path), min_image)
+
+    image = load_image(image_path)
+
+    assert image.shape == (300, 300, 3)
+    assert image.dtype == np.uint8
+
+
+def test_load_image_maximum_size(tmp_path):
+    """Test that 6000x6000 image loads successfully."""
+    import cv2
+
+    # Create 6000x6000 test image (exactly maximum)
+    max_image = np.ones((6000, 6000, 3), dtype=np.uint8) * 128
+    image_path = tmp_path / "max_image.jpg"
+    cv2.imwrite(str(image_path), max_image)
+
+    image = load_image(image_path)
+
+    assert image.shape == (6000, 6000, 3)
+    assert image.dtype == np.uint8
+
+
 def test_preprocess_image():
     """Test image preprocessing produces grayscale blurred image."""
     # Create test RGB image
