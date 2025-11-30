@@ -29,71 +29,81 @@ class ConstellationCatalog:
         self.boundary_file = self.cache_dir / "iau_boundaries.csv"
         self._boundaries = None
 
-    def download_boundaries(self, force_refresh: bool = False) -> pd.DataFrame:
+    def download_boundaries(
+        self, force_refresh: bool = False
+    ) -> Optional[pd.DataFrame]:
         """Download IAU constellation boundaries from VizieR.
 
         Args:
             force_refresh: Force re-download even if cache exists
 
         Returns:
-            DataFrame with constellation boundary data
+            DataFrame with constellation boundary data, or None if download fails
 
         Note:
             Uses IAU constellation boundaries catalog (VI/49).
             Contains boundary polygons for all 88 constellations.
+            Gracefully returns None if VizieR is unavailable (offline mode).
         """
         if self.boundary_file.exists() and not force_refresh:
             return pd.read_csv(self.boundary_file)
 
         print("Downloading IAU constellation boundaries from VizieR...")
 
-        # Query IAU constellation boundaries (VI/49)
-        vizier = Vizier(
-            columns=["Constellation", "RAhr", "DEdeg"],
-            row_limit=-1,
-        )
-
-        catalog_list = vizier.get_catalogs("VI/49")
-
-        if not catalog_list:
-            raise RuntimeError(
-                "Failed to download constellation boundaries from VizieR"
+        try:
+            # Query IAU constellation boundaries (VI/49)
+            vizier = Vizier(
+                columns=["Constellation", "RAhr", "DEdeg"],
+                row_limit=-1,
             )
 
-        catalog = catalog_list[0].to_pandas()
+            catalog_list = vizier.get_catalogs("VI/49")
 
-        # Clean and standardize column names
-        catalog = catalog.rename(
-            columns={
-                "Constellation": "constellation",
-                "RAhr": "ra_hours",
-                "DEdeg": "dec_deg",
-            }
-        )
+            if not catalog_list:
+                print("Warning: No constellation boundary data returned from VizieR")
+                return None
 
-        # Convert RA from hours to degrees
-        catalog["ra"] = catalog["ra_hours"] * 15.0  # 1 hour = 15 degrees
+            catalog = catalog_list[0].to_pandas()
 
-        # Use Dec directly
-        catalog["dec"] = catalog["dec_deg"]
+            # Clean and standardize column names
+            catalog = catalog.rename(
+                columns={
+                    "Constellation": "constellation",
+                    "RAhr": "ra_hours",
+                    "DEdeg": "dec_deg",
+                }
+            )
 
-        # Remove any rows with missing data
-        catalog = catalog.dropna(subset=["constellation", "ra", "dec"])
+            # Convert RA from hours to degrees
+            catalog["ra"] = catalog["ra_hours"] * 15.0  # 1 hour = 15 degrees
 
-        # Keep only needed columns
-        catalog = catalog[["constellation", "ra", "dec"]]
+            # Use Dec directly
+            catalog["dec"] = catalog["dec_deg"]
 
-        # Save to cache
-        catalog.to_csv(self.boundary_file, index=False)
-        print(f"Saved constellation boundaries to {self.boundary_file}")
+            # Remove any rows with missing data
+            catalog = catalog.dropna(subset=["constellation", "ra", "dec"])
 
-        return catalog
+            # Keep only needed columns
+            catalog = catalog[["constellation", "ra", "dec"]]
 
-    def load_boundaries(self) -> pd.DataFrame:
+            # Save to cache
+            catalog.to_csv(self.boundary_file, index=False)
+            print(f"Saved constellation boundaries to {self.boundary_file}")
+
+            return catalog
+
+        except Exception as e:
+            print(
+                f"Warning: Failed to download constellation boundaries: {e}"
+            )
+            print("App will continue without constellation identification")
+            return None
+
+    def load_boundaries(self) -> Optional[pd.DataFrame]:
         """Load constellation boundaries from cache or download if not available.
 
         Returns:
-            DataFrame with constellation boundary data
+            DataFrame with constellation boundary data, or None if unavailable
         """
         if self._boundaries is None:
             self._boundaries = self.download_boundaries()
@@ -188,6 +198,7 @@ class ConstellationCatalog:
 
         Returns:
             Constellation name (3-letter IAU abbreviation) or None if not found
+            Returns None if constellation boundaries are unavailable (offline mode)
 
         Example:
             >>> catalog = ConstellationCatalog()
@@ -196,6 +207,10 @@ class ConstellationCatalog:
             Ori
         """
         boundaries = self.load_boundaries()
+
+        # Return None if boundaries unavailable (offline mode)
+        if boundaries is None:
+            return None
 
         # Group by constellation
         for constellation_name, group in boundaries.groupby("constellation"):

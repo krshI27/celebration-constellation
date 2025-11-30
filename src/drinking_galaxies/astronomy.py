@@ -3,8 +3,11 @@
 This module downloads, caches, and manages star catalog data for constellation
 matching. Uses the Yale Bright Star Catalog (BSC5) which contains ~9,000 stars
 and is very lightweight (< 1 MB).
+
+Supports offline mode using local catalog files from data/supplemental/.
 """
 
+import gzip
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +16,100 @@ import pandas as pd
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astroquery.vizier import Vizier
+
+
+def parse_local_catalog(catalog_path: Path) -> pd.DataFrame:
+    """Parse Bright Star Catalogue V/50 from local fixed-width format file.
+
+    Format specification from ReadMe:
+    - Bytes 1-4: HR number (Harvard Revised Number)
+    - Bytes 76-77: RAh (hours, J2000)
+    - Bytes 78-79: RAm (minutes, J2000)
+    - Bytes 80-83: RAs (seconds, J2000)
+    - Byte 84: DE- (sign, J2000)
+    - Bytes 85-86: DEd (degrees, J2000)
+    - Bytes 87-88: DEm (arcminutes, J2000)
+    - Bytes 89-90: DEs (arcseconds, J2000)
+    - Bytes 103-107: Vmag (visual magnitude)
+
+    Args:
+        catalog_path: Path to catalog.gz file
+
+    Returns:
+        DataFrame with columns: star_id, ra, dec, magnitude
+
+    Raises:
+        FileNotFoundError: If catalog file doesn't exist
+        ValueError: If catalog parsing fails
+    """
+    if not catalog_path.exists():
+        raise FileNotFoundError(f"Local catalog not found: {catalog_path}")
+
+    print(f"Loading local catalog from {catalog_path}...")
+
+    records = []
+
+    with gzip.open(catalog_path, "rt", encoding="ascii", errors="ignore") as f:
+        for line in f:
+            if len(line) < 107:
+                continue
+
+            try:
+                # Extract HR number (bytes 1-4)
+                hr_str = line[0:4].strip()
+                if not hr_str:
+                    continue
+                star_id = int(hr_str)
+
+                # Extract RA J2000 (bytes 76-83)
+                ra_h = line[75:77].strip()
+                ra_m = line[77:79].strip()
+                ra_s = line[79:83].strip()
+
+                # Extract Dec J2000 (bytes 84-90)
+                dec_sign = line[83:84].strip()
+                dec_d = line[84:86].strip()
+                dec_m = line[86:88].strip()
+                dec_s = line[88:90].strip()
+
+                # Extract visual magnitude (bytes 103-107)
+                vmag_str = line[102:107].strip()
+
+                # Skip if any required field is missing
+                if not all([ra_h, ra_m, ra_s, dec_d, dec_m, dec_s, vmag_str]):
+                    continue
+
+                # Convert RA from sexagesimal to decimal degrees
+                ra_hours = float(ra_h) + float(ra_m) / 60.0 + float(ra_s) / 3600.0
+                ra_deg = ra_hours * 15.0  # Convert hours to degrees
+
+                # Convert Dec from sexagesimal to decimal degrees
+                dec_deg = float(dec_d) + float(dec_m) / 60.0 + float(dec_s) / 3600.0
+                if dec_sign == "-":
+                    dec_deg = -dec_deg
+
+                # Parse magnitude
+                magnitude = float(vmag_str)
+
+                records.append(
+                    {
+                        "star_id": star_id,
+                        "ra": ra_deg,
+                        "dec": dec_deg,
+                        "magnitude": magnitude,
+                    }
+                )
+
+            except (ValueError, IndexError):
+                continue
+
+    if not records:
+        raise ValueError("No valid star records found in catalog")
+
+    df = pd.DataFrame(records)
+    print(f"Loaded {len(df)} stars from local catalog")
+
+    return df
 
 
 class StarCatalog:
@@ -33,7 +130,12 @@ class StarCatalog:
         self._catalog = None
 
     def download_catalog(self, force_refresh: bool = False) -> pd.DataFrame:
-        """Download Yale Bright Star Catalog from VizieR.
+        """Load Yale Bright Star Catalog from local file or download from VizieR.
+
+        Priority order:
+        1. Use cached CSV if available and not force_refresh
+        2. Try loading from local catalog.gz in data/supplemental/
+        3. Fall back to VizieR download (requires network)
 
         Args:
             force_refresh: Force re-download even if cache exists
@@ -48,6 +150,29 @@ class StarCatalog:
         if self.catalog_file.exists() and not force_refresh:
             return pd.read_csv(self.catalog_file)
 
+        # Try loading from local supplemental data first
+        local_catalog_path = (
+            Path(__file__).parent.parent.parent
+            / "data"
+            / "supplemental"
+            / "catalog.gz"
+        )
+
+        if local_catalog_path.exists():
+            try:
+                catalog = parse_local_catalog(local_catalog_path)
+
+                # Save to cache
+                catalog.to_csv(self.catalog_file, index=False)
+                print(f"Saved catalog to {self.catalog_file}")
+
+                return catalog
+
+            except Exception as e:
+                print(f"Warning: Failed to parse local catalog: {e}")
+                print("Falling back to VizieR download...")
+
+        # Fall back to VizieR if local file not available
         print("Downloading Yale Bright Star Catalog from VizieR...")
 
         # Query Yale BSC5 catalog (V/50)

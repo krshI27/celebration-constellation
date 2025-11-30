@@ -275,16 +275,17 @@ class TestBoundaryDownload:
         cache_dir = tmp_path / "test_cache"
         catalog = ConstellationCatalog(cache_dir=cache_dir)
 
-        try:
-            boundaries = catalog.download_boundaries()
+        boundaries = catalog.download_boundaries()
 
-            assert catalog.boundary_file.exists()
-            assert isinstance(boundaries, pd.DataFrame)
-            assert "constellation" in boundaries.columns
-            assert "ra" in boundaries.columns
-            assert "dec" in boundaries.columns
-        except RuntimeError:
-            pytest.skip("VizieR unavailable for boundary download")
+        # Skip test if VizieR unavailable (offline mode)
+        if boundaries is None:
+            pytest.skip("VizieR unavailable - constellation boundaries unavailable")
+
+        assert catalog.boundary_file.exists()
+        assert isinstance(boundaries, pd.DataFrame)
+        assert "constellation" in boundaries.columns
+        assert "ra" in boundaries.columns
+        assert "dec" in boundaries.columns
 
     def test_load_boundaries_uses_cache(self, tmp_path: Path):
         """Test that load_boundaries uses cached data."""
@@ -320,11 +321,12 @@ class TestBoundaryDownload:
         cache_dir.mkdir(parents=True, exist_ok=True)
         fake_boundaries.to_csv(catalog.boundary_file, index=False)
 
-        try:
-            # Force refresh should download new data
-            fresh = catalog.download_boundaries(force_refresh=True)
+        # Force refresh should download new data
+        fresh = catalog.download_boundaries(force_refresh=True)
 
-            # New data should not contain "XXX"
-            assert "XXX" not in fresh["constellation"].values
-        except RuntimeError:
-            pytest.skip("VizieR unavailable for boundary download")
+        # Skip test if VizieR unavailable (offline mode)
+        if fresh is None:
+            pytest.skip("VizieR unavailable - constellation boundaries unavailable")
+
+        # New data should not contain "XXX"
+        assert "XXX" not in fresh["constellation"].values
