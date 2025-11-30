@@ -35,6 +35,14 @@ RANSAC-based point cloud matching finds the best-fitting star constellation:
 
 **Best match: Score 23.25, 46 matching stars at RA 193.1°, Dec -12.9°**
 
+### Overlay Comparison
+
+See how detected circles spatially correspond to matched star positions:
+
+![Composite Example](docs/images/composite_example.jpg)
+
+Green circles show detected objects, cyan/yellow stars show the matched constellation pattern.
+
 The app provides:
 
 - Match quality score and number of inliers
