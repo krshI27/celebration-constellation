@@ -179,7 +179,9 @@ class StarCatalog:
         k = 2 / (1 + cos_c)
 
         x = k * np.cos(dec) * np.sin(ra - ra0)
-        y = k * (np.cos(dec0) * np.sin(dec) - np.sin(dec0) * np.cos(dec) * np.cos(ra - ra0))
+        y = k * (
+            np.cos(dec0) * np.sin(dec) - np.sin(dec0) * np.cos(dec) * np.cos(ra - ra0)
+        )
 
         return np.column_stack([x, y])
 

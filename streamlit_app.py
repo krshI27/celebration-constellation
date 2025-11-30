@@ -209,7 +209,9 @@ def main():
             )
 
             if circles is None:
-                st.error("No circular objects detected. Try adjusting the detection settings.")
+                st.error(
+                    "No circular objects detected. Try adjusting the detection settings."
+                )
                 return
 
             st.success(f"Detected {len(circles)} circular objects!")
@@ -239,13 +241,17 @@ def main():
                         )
 
                         if not matches:
-                            st.warning("No matching constellations found. Try different detection settings.")
+                            st.warning(
+                                "No matching constellations found. Try different detection settings."
+                            )
                         else:
                             st.success(f"Found {len(matches)} matching constellations!")
 
                 if st.session_state.matches:
                     # Display current match
-                    match = st.session_state.matches[st.session_state.current_match_index]
+                    match = st.session_state.matches[
+                        st.session_state.current_match_index
+                    ]
 
                     st.metric(
                         "Match Score",
@@ -272,7 +278,10 @@ def main():
                     nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
 
                     with nav_col1:
-                        if st.button("⬅️ Previous") and st.session_state.current_match_index > 0:
+                        if (
+                            st.button("⬅️ Previous")
+                            and st.session_state.current_match_index > 0
+                        ):
                             st.session_state.current_match_index -= 1
                             st.rerun()
 
@@ -283,7 +292,11 @@ def main():
                         )
 
                     with nav_col3:
-                        if st.button("Next ➡️") and st.session_state.current_match_index < len(st.session_state.matches) - 1:
+                        if (
+                            st.button("Next ➡️")
+                            and st.session_state.current_match_index
+                            < len(st.session_state.matches) - 1
+                        ):
                             st.session_state.current_match_index += 1
                             st.rerun()
 
