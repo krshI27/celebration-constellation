@@ -11,6 +11,12 @@ import numpy as np
 from scipy.spatial import distance_matrix
 
 from drinking_galaxies.constellations import ConstellationCatalog
+from drinking_galaxies.visibility import (
+    calculate_best_viewing_months,
+    calculate_visibility_range,
+    get_example_cities,
+    get_viewing_regions,
+)
 
 
 def normalize_points(points: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
@@ -286,6 +292,26 @@ def match_to_sky_regions(
                 result["constellation_info"] = (
                     constellation_catalog.get_constellation_info(constellation_name)
                 )
+
+            # Add viewing location information
+            visibility = calculate_visibility_range(region["ra"], region["dec"])
+            result["visibility"] = visibility
+
+            # Add geographic regions
+            regions_list = get_viewing_regions(
+                visibility["min_latitude"], visibility["max_latitude"]
+            )
+            result["viewing_regions"] = regions_list
+
+            # Add example cities
+            cities = get_example_cities(
+                visibility["min_latitude"], visibility["max_latitude"]
+            )
+            result["example_cities"] = cities
+
+            # Add best viewing months
+            months = calculate_best_viewing_months(region["ra"])
+            result["best_viewing_months"] = months
 
             results.append(result)
 

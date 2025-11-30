@@ -8,7 +8,14 @@ Find your table's hidden constellation! Upload a photo of bottles, plates, and g
 
 ## Features
 
-✨ **NEW in v0.2.0**: Constellation name identification with full IAU constellation data
+✨ **NEW in v0.3.0**: Viewing location calculator - discover where on Earth you can see your matched constellation!
+
+- Shows latitude ranges where constellations are visible
+- Provides example cities and geographic regions
+- Displays best viewing months based on RA/Dec coordinates
+- Optimal viewing locations for maximum altitude
+
+✨ **v0.2.0**: Constellation name identification with full IAU constellation data
 
 ## What's Included
 

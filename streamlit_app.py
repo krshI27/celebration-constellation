@@ -273,6 +273,58 @@ def main():
                         f"RA: {match['ra']:.1f}°, Dec: {match['dec']:.1f}°",
                     )
 
+                    # Display viewing location information
+                    st.divider()
+                    st.markdown("### 📍 Where Can You See This?")
+
+                    if "visibility" in match:
+                        vis = match["visibility"]
+
+                        # Latitude range
+                        if vis["globally_visible"]:
+                            st.success("✨ Visible from anywhere on Earth!")
+                        else:
+                            lat_range = (
+                                f"{vis['min_latitude']:.1f}° to "
+                                f"{vis['max_latitude']:.1f}°"
+                            )
+                            st.info(f"**Visible from:** {lat_range} latitude")
+
+                            # Optimal viewing
+                            optimal = vis["optimal_latitude"]
+                            hemisphere = "N" if optimal >= 0 else "S"
+                            st.caption(
+                                f"**Best viewing:** {abs(optimal):.1f}°{hemisphere} "
+                                "(constellation highest in sky)"
+                            )
+
+                        # Geographic regions
+                        if "viewing_regions" in match and match["viewing_regions"]:
+                            regions_str = ", ".join(match["viewing_regions"])
+                            st.markdown(f"**Regions:** {regions_str}")
+
+                        # Example cities
+                        if "example_cities" in match and match["example_cities"]:
+                            st.markdown("**Example Cities:**")
+                            for city in match["example_cities"][:5]:
+                                lat_str = f"{abs(city['lat']):.1f}°"
+                                lat_str += "N" if city["lat"] >= 0 else "S"
+                                lon_str = f"{abs(city['lon']):.1f}°"
+                                lon_str += "E" if city["lon"] >= 0 else "W"
+                                st.markdown(
+                                    f"• {city['name']} ({lat_str}, {lon_str})"
+                                )
+
+                        # Best viewing months
+                        if (
+                            "best_viewing_months" in match
+                            and match["best_viewing_months"]
+                        ):
+                            months_str = ", ".join(match["best_viewing_months"])
+                            st.markdown(f"🗓️ **Best months:** {months_str}")
+
+                    st.divider()
+
                     # Render sky visualization
                     sky_image = render_sky_visualization(match)
                     st.image(sky_image, use_container_width=True)
