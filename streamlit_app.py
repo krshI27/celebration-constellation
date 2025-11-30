@@ -15,6 +15,10 @@ import streamlit as st
 from drinking_galaxies.astronomy import StarCatalog
 from drinking_galaxies.detection import detect_and_extract, draw_circles
 from drinking_galaxies.matching import match_to_sky_regions
+from drinking_galaxies.visualization import (
+    create_constellation_visualization,
+    normalize_positions_to_canvas,
+)
 
 
 def initialize_session_state():
@@ -90,49 +94,40 @@ def find_constellation_matches(centers: np.ndarray, num_regions: int = 100):
 
 
 def render_sky_visualization(match: dict) -> np.ndarray:
-    """Render star constellation on black background.
+    """Render star constellation with magnitude-scaled stars.
 
     Args:
-        match: Match result dict with star positions and transform
+        match: Match result dict with star positions, magnitudes, and transform
 
     Returns:
-        RGB image with stars drawn
+        RGB image with enhanced star visualization
     """
-    # Create black canvas matching uploaded image size
+    # Get image shape
     image_shape = st.session_state.uploaded_image.shape
-    canvas = np.zeros(image_shape, dtype=np.uint8)
 
     # Get transformed circle positions
     transformed = match["transformed_points"]
 
-    # Scale to image dimensions
-    # Normalize to [-1, 1] range first
-    t_min = transformed.min(axis=0)
-    t_max = transformed.max(axis=0)
-    t_range = t_max - t_min
+    # Normalize to canvas coordinates
+    star_positions = normalize_positions_to_canvas(
+        transformed, (image_shape[0], image_shape[1]), margin=0.1
+    )
 
-    if np.any(t_range < 1e-10):
-        return canvas
+    # Get star magnitudes if available
+    magnitudes = None
+    if "stars" in match and "magnitude" in match["stars"].columns:
+        magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
 
-    normalized = (transformed - t_min) / t_range
-
-    # Scale to image dimensions with margin
-    margin = 0.1
-    scaled = normalized * (1 - 2 * margin) + margin
-    scaled[:, 0] *= image_shape[1]  # Width
-    scaled[:, 1] *= image_shape[0]  # Height
-
-    # Draw stars at transformed positions
-    star_color = (255, 255, 255)  # White stars
-    for x, y in scaled.astype(int):
-        if 0 <= x < image_shape[1] and 0 <= y < image_shape[0]:
-            # Draw star as small circle
-            for dx in range(-2, 3):
-                for dy in range(-2, 3):
-                    if dx * dx + dy * dy <= 4:
-                        px, py = x + dx, y + dy
-                        if 0 <= px < image_shape[1] and 0 <= py < image_shape[0]:
-                            canvas[py, px] = star_color
+    # Create visualization with magnitude-scaled stars
+    canvas = create_constellation_visualization(
+        image_shape,
+        star_positions,
+        magnitudes=magnitudes,
+        line_segments=None,  # TODO: Add constellation lines in future
+        background_color=(10, 10, 30),  # Dark blue background
+        star_color=(255, 255, 255),
+        draw_lines=False,
+    )
 
     return canvas
 
