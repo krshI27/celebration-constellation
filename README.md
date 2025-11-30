@@ -17,6 +17,40 @@ Find your table's hidden constellation! Upload a photo of bottles, plates, and g
 
 ✨ **v0.2.0**: Constellation name identification with full IAU constellation data
 
+## Example Output
+
+### Circle Detection
+
+The app uses quality filtering and non-maximum suppression to detect high-quality circular objects:
+
+![Detection Example](docs/images/detection_example.jpg)
+
+**46 circular objects detected with quality filtering (edge strength + contrast analysis)**
+
+### Constellation Matching
+
+RANSAC-based point cloud matching finds the best-fitting star constellation:
+
+![Match Example](docs/images/match_example.jpg)
+
+**Best match: Score 23.25, 46 matching stars at RA 193.1°, Dec -12.9°**
+
+The app provides:
+
+- Match quality score and number of inliers
+- Sky position (RA/Dec coordinates)
+- Constellation identification (when boundaries available)
+- Viewing location information (latitude ranges, example cities, best months)
+
+## Offline Mode Support
+
+✨ **NEW**: Works without internet connection using local star catalog data
+
+- Bundled Bright Star Catalogue (V/50) with 9,110 stars
+- Automatic fallback from VizieR to local data
+- Graceful degradation when constellation boundaries unavailable
+- Full functionality for star matching without network access
+
 ## What's Included
 
 ### Directory Structure
