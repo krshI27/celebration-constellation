@@ -243,12 +243,13 @@ def render_sky_visualization(match: dict) -> np.ndarray:
     return canvas
 
 
-def render_composite_overlay(match: dict, enhanced: bool = False) -> np.ndarray:
+def render_composite_overlay(match: dict) -> np.ndarray:
     """Render composite overlay showing both circles and stars.
+    
+    Uses photometric stretching and per-star colors based on B-V temperature.
 
     Args:
         match: Match result dict with star positions, magnitudes, and transform
-        enhanced: Apply photometric stretching if True
 
     Returns:
         RGB image with circles and stars overlaid
@@ -264,11 +265,8 @@ def render_composite_overlay(match: dict, enhanced: bool = False) -> np.ndarray:
     # Theme highlight color
     theme_rgb = get_theme_primary_rgb()
 
-    # Apply enhanced rendering if enabled
-    if enhanced:
-        gray_base = apply_photometric_stretch(st.session_state.uploaded_image)
-    else:
-        gray_base = to_gray_rgb(st.session_state.uploaded_image)
+    # Always apply photometric stretching for better contrast
+    gray_base = apply_photometric_stretch(st.session_state.uploaded_image)
 
     # Do not show circle centers in overlay
     empty_centers = np.empty((0, 2), dtype=np.int32)
@@ -295,26 +293,54 @@ def render_composite_overlay(match: dict, enhanced: bool = False) -> np.ndarray:
                 per_star_colors.append((255, 210, 150))
         per_star_colors = np.array(per_star_colors, dtype=np.uint8)
 
-    overlay = create_composite_overlay(
-        gray_base,
-        empty_centers,
-        star_positions,
-        magnitudes=magnitudes,
-        circle_color=theme_rgb,
-        star_color=per_star_colors if per_star_colors is not None else theme_rgb,
-        alpha=1.0,
-        star_scale_factor=24.0,
-    )
+    # Build overlay with per-star colors if available
+    if per_star_colors is not None:
+        overlay = gray_base.copy()
+        star_layer = np.zeros_like(gray_base)
+        
+        # Render stars with individual colors and magnitude scaling
+        for idx, ((x, y), mag, color) in enumerate(zip(star_positions, magnitudes if magnitudes is not None else [3.0]*len(star_positions), per_star_colors)):
+            from drinking_galaxies.visualization import magnitude_to_radius
+            radius = magnitude_to_radius(mag, 24.0)
+            x_int, y_int = int(x), int(y)
+            
+            if 0 <= x_int < star_layer.shape[1] and 0 <= y_int < star_layer.shape[0]:
+                # Draw filled circle with per-star color
+                cv2.circle(star_layer, (x_int, y_int), radius, tuple(int(c) for c in color), -1)
+                
+                # Add glow effect
+                glow_radius = radius + 4
+                glow_color = tuple(int(c * 0.6) for c in color)
+                cv2.circle(star_layer, (x_int, y_int), glow_radius, glow_color, 2)
+        
+        # Apply Gaussian blur for natural PSF-like glow
+        star_layer = cv2.GaussianBlur(star_layer, (7, 7), 2.0)
+        
+        # Blend with full opacity
+        overlay = cv2.addWeighted(gray_base, 1.0, star_layer, 1.0, 0)
+    else:
+        # Fall back to single-color rendering
+        overlay = create_composite_overlay(
+            gray_base,
+            empty_centers,
+            star_positions,
+            magnitudes=magnitudes,
+            circle_color=theme_rgb,
+            star_color=theme_rgb,
+            alpha=1.0,
+            star_scale_factor=24.0,
+        )
 
     return overlay
 
 
-def render_circles_on_stars(match: dict, enhanced: bool = False) -> np.ndarray:
+def render_circles_on_stars(match: dict) -> np.ndarray:
     """Render circle positions overlaid on star constellation pattern.
+    
+    Uses per-star colors based on B-V temperature index.
 
     Args:
         match: Match result dict with star positions, magnitudes, and transform
-        enhanced: Apply enhanced rendering if True (currently unused for star-only view)
 
     Returns:
         RGB image with circles drawn on star pattern
@@ -498,17 +524,7 @@ def main():
 
         num_regions = {"Fast": 50, "Balanced": 100, "Thorough": 200}[search_depth]
         if num_regions > 100:
-            st.caption("⏱️ Estimated time: 30–90 seconds")
-
-        st.divider()
-
-        enhanced_render = st.checkbox(
-            "Enhanced Rendering",
-            value=False,
-            help="Apply photometric stretching and improved star glow for better aesthetics",
-        )
-
-    # Minimal derived detection parameters (auto-tuned defaults)
+            st.caption("⏱️ Estimated time: 30–90 seconds")    # Minimal derived detection parameters (auto-tuned defaults)
     quality_threshold = 0.15
     max_circles = 50
 
@@ -786,10 +802,8 @@ def main():
             tab1, tab2, tab3 = st.tabs(["📸 Overlay", "⭐ Pattern", "🎯 Circles"])
 
             with tab1:
-                st.caption("Stars (yellow) overlaid on your photo with centers (green)")
-                composite_image = render_composite_overlay(
-                    match, enhanced=enhanced_render
-                )
+                st.caption("Stars overlaid on your photo (colored by temperature)")
+                composite_image = render_composite_overlay(match)
                 st.image(composite_image, use_container_width=True)
 
             with tab2:
@@ -798,10 +812,8 @@ def main():
                 st.image(sky_image, use_container_width=True)
 
             with tab3:
-                st.caption("Detected circles (green) on star pattern")
-                circles_on_stars_image = render_circles_on_stars(
-                    match, enhanced=enhanced_render
-                )
+                st.caption("Detected circles on star pattern (colored by temperature)")
+                circles_on_stars_image = render_circles_on_stars(match)
                 st.image(circles_on_stars_image, use_container_width=True)
 
             # Bottom-centered navigation
