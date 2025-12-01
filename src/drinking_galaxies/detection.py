@@ -334,6 +334,7 @@ def draw_circles(
     show_centers: bool = True,
     circle_color: tuple[int, int, int] = (0, 255, 0),
     center_color: tuple[int, int, int] = (255, 0, 0),
+    thickness: int = 2,
 ) -> np.ndarray:
     """Draw detected circles and centers on image.
 
@@ -352,7 +353,7 @@ def draw_circles(
 
     for x, y, r in circles:
         if show_circles:
-            cv2.circle(output, (x, y), r, circle_color, 2)
+            cv2.circle(output, (x, y), r, circle_color, thickness)
         if show_centers:
             cv2.circle(output, (x, y), 3, center_color, -1)
 

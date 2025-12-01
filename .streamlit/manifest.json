@@ -1,0 +1,26 @@
+{
+    "name": "Drinking Galaxies",
+    "short_name": "Galaxies",
+    "description": "Find your table's hidden constellation! Match photos of bottles and glasses to star patterns in the night sky.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0E1117",
+    "theme_color": "#00D9FF",
+    "orientation": "portrait",
+    "scope": "/",
+    "lang": "en",
+    "icons": [
+        {
+            "src": "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f30c.png",
+            "sizes": "72x72",
+            "type": "image/png",
+            "purpose": "any"
+        },
+        {
+            "src": "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f30c.svg",
+            "sizes": "512x512",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ]
+}

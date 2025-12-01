@@ -174,6 +174,7 @@ def create_constellation_visualization(
     star_color: tuple[int, int, int] = (255, 255, 255),
     line_color: tuple[int, int, int] = (100, 150, 255),
     draw_lines: bool = True,
+    star_scale_factor: float = 12.0,
 ) -> np.ndarray:
     """Create complete constellation visualization.
 
@@ -210,7 +211,11 @@ def create_constellation_visualization(
     # Draw stars
     if magnitudes is not None and len(magnitudes) == len(star_positions):
         canvas = render_stars_with_magnitude(
-            canvas, star_positions, magnitudes, star_color
+            canvas,
+            star_positions,
+            magnitudes,
+            star_color,
+            scale_factor=star_scale_factor,
         )
     else:
         canvas = render_simple_stars(canvas, star_positions, color=star_color)
@@ -226,6 +231,7 @@ def create_composite_overlay(
     circle_color: tuple[int, int, int] = (0, 255, 0),
     star_color: tuple[int, int, int] = (255, 255, 0),
     alpha: float = 0.9,
+    star_scale_factor: float = 12.0,
 ) -> np.ndarray:
     """Create composite overlay showing both circles and matched stars.
 
@@ -257,7 +263,11 @@ def create_composite_overlay(
     # Draw stars on separate layer with enhanced visibility
     if magnitudes is not None and len(magnitudes) == len(star_positions):
         star_layer = render_stars_with_magnitude(
-            star_layer, star_positions, magnitudes, star_color, scale_factor=12.0
+            star_layer,
+            star_positions,
+            magnitudes,
+            star_color,
+            scale_factor=star_scale_factor,
         )
     else:
         star_layer = render_simple_stars(
