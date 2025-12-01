@@ -11,17 +11,20 @@ quality_score = 0.6 × edge_strength + 0.4 × contrast
 ```
 
 Where:
+
 - **edge_strength**: Proportion of Canny edge pixels on circle perimeter (50 sample points)
 - **contrast**: Normalized absolute difference of mean intensity inside vs. outside circle
 
 ### Parameters
 
 **Edge Detection (Canny)**:
+
 - Lower threshold: 50
 - Upper threshold: 150
 - Ratio: 1:3 (Canny's recommended ratio)
 
 **Sampling**:
+
 - Perimeter samples: 50 points uniformly distributed around circle
 - Inner mask: radius - 2 pixels
 - Outer mask: radius + 2 to radius + 10 pixels
@@ -31,6 +34,7 @@ Where:
 **Default: 0.15**
 
 Threshold selection rationale:
+
 - **0.10**: More detections (85-90% recall), more false positives (~50% precision)
 - **0.15**: Balanced trade-off (~70% precision, ~75% recall), filters 30-50% of raw detections
 - **0.30**: Stricter quality (~85% precision), may miss valid low-contrast circles
@@ -40,14 +44,17 @@ Threshold selection rationale:
 ### Weighting Rationale
 
 **Edge strength (60%)**: Prioritizes geometric accuracy
+
 - Circles with well-defined edges are more likely to be actual objects
 - Reduces false positives from texture patterns or shadows
 
 **Contrast (40%)**: Secondary validation
+
 - Ensures object has distinct boundary from background
 - Helps identify objects in varied lighting conditions
 
 **References**:
+
 - OpenCV HoughCircles documentation: <https://docs.opencv.org/4.x/dd/d1a/group__imgproc__feature.html>
 - Canny edge detection: J. Canny, "A Computational Approach to Edge Detection," IEEE PAMI, 1986
 
@@ -62,6 +69,7 @@ match_score = num_inliers × min(1.0, len(circles) / len(stars))
 ```
 
 Where:
+
 - **num_inliers**: Number of transformed circle centers within threshold of star positions
 - **proportion_penalty**: `min(1.0, len(circles) / len(stars))`
 
@@ -86,11 +94,13 @@ Where:
 **Iterations: 1000**
 
 Confidence calculation (Fischler & Bolles 1981):
+
 ```
 confidence = 1 - (1 - p^n)^k
 ```
 
 Where:
+
 - p = 0.5 (50% inlier ratio assumption)
 - n = 3 (sample size, minimum for 2D similarity transform)
 - k = 1000 (number of iterations)
@@ -100,6 +110,7 @@ Result: `confidence = 1 - (1 - 0.125)^1000 ≈ 0.99` (99% confidence)
 **Sample Size: 3 points**
 
 Minimum points required for 2D similarity transform:
+
 - Scale (1 DOF)
 - Rotation (1 DOF)
 - Translation (2 DOF)
@@ -109,6 +120,7 @@ Minimum points required for 2D similarity transform:
 **Inlier Threshold: 0.05 (normalized coordinates)**
 
 In stereographic projection:
+
 - Normalized space: [0, 1] × [0, 1]
 - 0.05 threshold ≈ 0.1° angular separation on celestial sphere
 - Typical star position accuracy: 0.01-0.1° (Yale Bright Star Catalog)
@@ -119,6 +131,7 @@ Higher threshold (0.10): More lenient, increases false positive rate
 **Minimum Inliers: 3 points**
 
 Rationale:
+
 - Same as sample size (3 points minimum for pattern)
 - Ensures matched patterns have at least triangular geometry
 - Prevents spurious matches from collinear point pairs
@@ -126,15 +139,18 @@ Rationale:
 ### Performance
 
 **Per Region**:
+
 - 1000 iterations × transform estimation: ~0.5 seconds
 - Total: ~0.5 seconds per sky region
 
 **Full Matching** (100 regions):
+
 - 100 regions × 0.5s = 50 seconds
 - With stereographic projection overhead: 30-60 seconds
 - User experience: Progress feedback via Streamlit spinner
 
 **References**:
+
 - Fischler & Bolles, "Random Sample Consensus: A Paradigm for Model Fitting," CACM 1981
 - Hartley & Zisserman, "Multiple View Geometry in Computer Vision," 2nd ed., Section 4.7
 
@@ -160,10 +176,12 @@ where D = 1 + sin(Dec₀) × sin(Dec) + cos(Dec₀) × cos(Dec) × cos(RA - RA�
 ### Properties
 
 **Conformal**: Preserves local angles and shapes
+
 - Critical for RANSAC matching (requires similar patterns)
 - Distortion increases with distance from projection center
 
 **Coverage**: Handles most of celestial sphere
+
 - Singularity at opposite pole (avoided by centering on match region)
 - Effective for regions up to 90° from center
 
@@ -172,20 +190,24 @@ where D = 1 + sin(Dec₀) × sin(Dec) + cos(Dec₀) × cos(Dec) × cos(RA - RA�
 **Default: 100 regions**
 
 Sampling strategy:
+
 - RA: Uniform random 0° to 360° (full circle)
 - Dec: Uniform random -90° to +90° (both hemispheres)
 
 **User control** (Streamlit sidebar):
+
 - Range: 20-200 regions
 - Trade-off: Coverage vs. computation time
   - 20 regions: ~10s matching, may miss best match
   - 200 regions: ~120s matching, higher chance of optimal match
 
 **Justification**: 100 regions balances:
+
 - Coverage: Sufficient samples to find patterns anywhere in sky
 - Performance: 60s total time acceptable for interactive use (UX research: users tolerate 30-60s with progress feedback)
 
 **References**:
+
 - Snyder, "Map Projections: A Working Manual," USGS Professional Paper 1395, 1987
 - Calabretta & Greisen, "Representations of celestial coordinates in FITS," A&A 2002
 
@@ -215,12 +237,14 @@ overlap_ratio = 1.0 - (distance_between_centers / sum_of_radii)
 ```
 
 Where:
+
 - distance_between_centers: Euclidean distance between (x₁, y₁) and (x₂, y₂)
 - sum_of_radii: r₁ + r₂
 
 **Overlap threshold: 0.3**
 
 Interpretation:
+
 - overlap_ratio = 0.0: Circles just touching
 - overlap_ratio = 0.3: Centers separated by 70% of combined radii
 - overlap_ratio = 1.0: Centers coincide
@@ -236,6 +260,7 @@ Interpretation:
 **Justification**: Threshold 0.3 removes clear duplicates while preserving adjacent objects (e.g., two plates side by side).
 
 **References**:
+
 - Neubeck & Van Gool, "Efficient Non-Maximum Suppression," ICPR 2006
 - OpenCV cv2.dnn.NMSBoxes documentation (similar approach for bounding boxes)
 
@@ -252,6 +277,7 @@ Reduce noise and smooth image before edge detection for circle detection.
 **Kernel size: 9×9 pixels**
 
 Rationale:
+
 - Must be odd (for symmetric filter)
 - 9×9 provides good balance:
   - Too small (3×3): Insufficient noise reduction
@@ -260,16 +286,19 @@ Rationale:
 **Sigma: 2.0 (standard deviation)**
 
 Gaussian formula:
+
 ```
 G(x, y) = (1 / 2πσ²) × exp(-(x² + y²) / 2σ²)
 ```
 
 With σ=2.0:
+
 - Effective radius: ~3σ = 6 pixels (covers most of 9×9 kernel)
 - Weight at center: 1.0
 - Weight at edge (4.5 pixels): ~0.01 (minimal contribution)
 
 **References**:
+
 - OpenCV GaussianBlur documentation: <https://docs.opencv.org/4.x/d4/d86/group__imgproc__filter.html>
 - Lindeberg, "Scale-Space Theory in Computer Vision," 1994
 
@@ -282,6 +311,7 @@ With σ=2.0:
 **Minimum: 300×300 pixels**
 
 Rationale:
+
 - Circles require sufficient resolution for edge detection
 - Minimum object size (20px radius) needs context
 - HoughCircles unreliable below this resolution
@@ -289,6 +319,7 @@ Rationale:
 **Maximum: 6000×6000 pixels (36 megapixels)**
 
 Rationale:
+
 - Exceeds typical smartphone cameras (12-20 MP)
 - Prevents out-of-memory errors on standard desktops (8-16GB RAM)
 - Processing time remains reasonable (< 5 seconds)
@@ -296,11 +327,13 @@ Rationale:
 **Recommended: 1500-3000 pixels**
 
 Optimal trade-off:
+
 - Detection quality: Sufficient detail for HoughCircles
 - Performance: 1-2 seconds processing time
 - File size: 1-3 MB JPEG (reasonable upload)
 
 **References**:
+
 - OpenCV memory management: <https://docs.opencv.org/4.x/d6/d6d/tutorial_mat_the_basic_image_container.html>
 - Nielsen Norman Group, "Response Times: 3 Important Limits" (UX research on acceptable latency)
 

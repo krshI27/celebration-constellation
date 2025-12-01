@@ -51,6 +51,7 @@ drinking-galaxies/
 **Decision**: Single package (`drinking_galaxies/`) with 7 modules, no subpackages.
 
 **Rationale**:
+
 - **Small codebase**: ~2000 lines total (detection: 300, matching: 250, astronomy: 400, etc.)
 - **Single purpose**: Application does one thing well (constellation matching)
 - **Clear separation**: Each module has distinct responsibility (detection, matching, astronomy, etc.)
@@ -60,11 +61,13 @@ drinking-galaxies/
 > "For small projects (< 500 lines, single purpose), use flat structure."
 
 **When to consider subpackages**:
+
 - Total lines > 2000 and growing
 - Multiple teams working on different features
 - Need for plugin architecture or extensibility
 
 **References**:
+
 - Python Packaging User Guide: <https://packaging.python.org/en/latest/>
 - "Structuring Your Project" - The Hitchhiker's Guide to Python
 
@@ -77,11 +80,13 @@ drinking-galaxies/
 **Rationale**:
 
 **Streamlit convention**:
+
 ```bash
 streamlit run streamlit_app.py
 ```
 
 Framework expects app file in current directory or specified path. Root placement enables:
+
 - Simple command: `streamlit run streamlit_app.py` (no path navigation)
 - Clear separation: Application layer (UI) vs. library layer (business logic)
 - Importability: `from drinking_galaxies import detection` works cleanly
@@ -89,11 +94,13 @@ Framework expects app file in current directory or specified path. Root placemen
 **Alternative considered**: `src/drinking_galaxies/streamlit_app.py`
 
 Rejected because:
+
 - Violates Streamlit convention (requires `streamlit run src/drinking_galaxies/streamlit_app.py`)
 - Mixes UI code with library code
 - Complicates future packaging (library vs. application)
 
 **References**:
+
 - Streamlit documentation: <https://docs.streamlit.io/library/get-started/main-concepts>
 - Python package structure best practices (separate app from library)
 
@@ -109,11 +116,13 @@ Rejected because:
 > "Always name the main entry point file main.py (never use the package name)"
 
 **Benefits**:
+
 - **Clarity**: Immediately obvious which file starts the application
 - **Consistency**: Same pattern across all projects using this template
 - **No confusion**: Avoids circular import issues with module named same as package
 
 **Usage patterns**:
+
 ```bash
 # CLI (minimal, delegates to library)
 python src/drinking_galaxies/main.py photo.jpg
@@ -126,6 +135,7 @@ from drinking_galaxies import detect_and_extract
 ```
 
 **References**:
+
 - Project constitution v1.0.0, "Python Package Structure Selection"
 - PEP 338 (Executing modules as scripts)
 
@@ -141,6 +151,7 @@ from drinking_galaxies import detect_and_extract
 > "Tests MUST use synthetic test data, not fixture files."
 
 **Benefits**:
+
 - **Reproducible**: No dependency on external image files
 - **Version control**: No large binary files in git
 - **Fast execution**: No I/O overhead, tests run in-memory
@@ -148,6 +159,7 @@ from drinking_galaxies import detect_and_extract
 - **Portable**: Tests work on any system without data download
 
 **Implementation pattern**:
+
 ```python
 # Create synthetic test image with known circle
 def create_test_image_with_circle(size=300, radius=50):
@@ -168,6 +180,7 @@ def test_detect_circles():
 **Exception**: `tests/fixtures/` may contain small reference data (< 100 KB) for integration tests, but synthetic data is preferred.
 
 **References**:
+
 - Project constitution v1.0.0, "Test Structure"
 - pytest best practices: <https://docs.pytest.org/en/stable/goodpractices.html>
 
@@ -178,6 +191,7 @@ def test_detect_circles():
 **Decision**: Three-tier structure: `raw/`, `input/`, `output/`.
 
 **Structure**:
+
 ```
 data/
 ├── raw/         # Original, immutable source data
@@ -189,21 +203,25 @@ data/
 **Rationale**:
 
 **raw/ (immutable)**:
+
 - Original uploaded images
 - Never modified programmatically
 - Serves as backup and audit trail
 
 **input/ (processed)**:
+
 - Resized or normalized images
 - Cached preprocessing results
 - Ready for detection pipeline
 
 **output/ (generated)**:
+
 - Detection results (circles, centers)
 - Constellation match visualizations
 - Exported data (CSV, JSON)
 
 **Git exclusion**: Entire `data/` directory git-ignored to prevent:
+
 - Large file bloat (images can be 1-5 MB each)
 - Sensitive data leakage (user-uploaded photos)
 - Merge conflicts on binary files
@@ -211,6 +229,7 @@ data/
 **Exception**: `data/supplemental/vizier_v50.ipynb` version-controlled for reproducibility (star catalog download script).
 
 **References**:
+
 - Project constitution v1.0.0, "Data Organization"
 - Data science best practices (raw/processed/results separation)
 
@@ -221,6 +240,7 @@ data/
 **Decision**: All config files in `.config/`, secrets in `.env` (git-ignored).
 
 **Structure**:
+
 ```
 .config/
 ├── environment.yml      # Conda dependencies
@@ -229,6 +249,7 @@ data/
 ```
 
 **Environment variables** (.env):
+
 ```bash
 PROJECT_NAME=drinking-galaxies
 VIZIER_TIMEOUT=10          # Star catalog query timeout
@@ -237,11 +258,13 @@ LOG_LEVEL=INFO
 ```
 
 **Security**:
+
 - `.env` git-ignored (never commit secrets)
 - `.env.example` version-controlled (template for developers)
 - Validate required variables at startup
 
 **References**:
+
 - 12-Factor App methodology: <https://12factor.net/config>
 - Project constitution v1.0.0, "Configuration and Security"
 
@@ -257,6 +280,7 @@ LOG_LEVEL=INFO
 > "Keep project root CLEAN: Only essential files (README.md, .gitignore, optionally pyproject.toml)"
 
 **Structure**:
+
 ```
 .docker/
 ├── Dockerfile              # Multi-stage build
@@ -265,11 +289,13 @@ LOG_LEVEL=INFO
 ```
 
 **Benefits**:
+
 - Clean root directory
 - Grouped Docker-related files
 - Easy to locate and modify
 
 **Usage**:
+
 ```bash
 cd .docker
 docker compose up -d
@@ -279,6 +305,7 @@ docker compose exec dev bash
 **Note**: Use `docker compose` (with space), not `docker-compose` (deprecated hyphenated command).
 
 **References**:
+
 - Docker Compose v2 specification: <https://docs.docker.com/compose/>
 - Project constitution v1.0.0, "Project Structure"
 
@@ -289,22 +316,26 @@ docker compose exec dev bash
 **Decision**: Technical docs in `docs/`, specifications in `.specify/`.
 
 **docs/ (project documentation)**:
+
 - QUICKSTART.md - Getting started guide
 - ALGORITHMS.md - Algorithm explanations
 - ARCHITECTURE.md - This document
 - images/ - Screenshots and examples
 
 **.specify/ (spec-kit)**:
+
 - constitution.md - Project principles
 - specifications/ - Requirements and user stories
 - plans/ - Technical implementation plans
 - tasks/ - Implementation task breakdowns
 
 **Separation rationale**:
+
 - `docs/` - For users and contributors (public-facing)
 - `.specify/` - For development workflow (internal process)
 
 **References**:
+
 - GitHub spec-kit: <https://github.com/github/spec-kit>
 - Documentation best practices (user docs vs. internal specs)
 
@@ -315,6 +346,7 @@ docker compose exec dev bash
 **Decision**: Dual AI configuration (GitHub Copilot + Claude Code).
 
 **Structure**:
+
 ```
 .github/
 ├── copilot-instructions.md     # Repository-wide instructions
@@ -330,17 +362,20 @@ docker compose exec dev bash
 ```
 
 **Rationale**:
+
 - **GitHub Copilot**: Inline completions, chat, repository context
 - **Claude Code**: Long-form reasoning, file creation, multi-step workflows
 - Both follow project constitution and coding standards
 
 **Custom agents**: Specialized AI profiles for focused tasks:
+
 - `@docs-agent` - Technical writing
 - `@test-agent` - Quality assurance
 - `@data-agent` - Spatial analysis
 - `@lint-agent` - Code formatting
 
 **References**:
+
 - Project constitution v1.0.0, "AI Assistant Integration"
 - .github/AGENTS.md (agent documentation)
 
@@ -351,12 +386,14 @@ docker compose exec dev bash
 ### When to Use Flat Structure (Current)
 
 **Criteria** (from constitution):
+
 - Total lines < 2000
 - Single purpose application
 - 1-2 developers
 - No plugin system needed
 
 **Drinking Galaxies fits all criteria**:
+
 - ~2000 lines total
 - Single purpose (constellation matching)
 - Individual developer project
@@ -365,12 +402,14 @@ docker compose exec dev bash
 ### When to Consider Modular Structure
 
 **Migrate if**:
+
 - Total lines > 2000 and growing
 - Multiple distinct features (e.g., add planets, deep-sky objects)
 - Team of 3+ developers
 - Need for plugin architecture
 
 **Example modular structure** (future):
+
 ```
 src/drinking_galaxies/
 ├── __init__.py
@@ -389,6 +428,7 @@ src/drinking_galaxies/
 ```
 
 **References**:
+
 - Project constitution v1.0.0, "Python Package Structure Selection"
 - "Scaling Python Codebases" - Real Python
 
@@ -417,12 +457,14 @@ src/drinking_galaxies/
 **Context**: No multi-user scenarios, no server deployment.
 
 **Architectural implications**:
+
 - No database (local file cache only)
 - No authentication or user management
 - No concurrent access handling
 - Streamlit single-process model sufficient
 
 **File impact**:
+
 - Star catalog cache: `~/.drinking_galaxies/star_cache/` (user home directory)
 - No need for multi-tenant data isolation
 - Simple file-based configuration
@@ -432,11 +474,13 @@ src/drinking_galaxies/
 **Context**: v0.3.0 added offline mode with bundled star catalog.
 
 **Architectural implications**:
+
 - VizieR query timeout acceptable (10s with cache fallback)
 - Star catalog bundled in `data/supplemental/`
 - No real-time catalog updates required
 
 **File impact**:
+
 - `astronomy.py`: Local cache takes precedence over VizieR
 - `data/supplemental/vizier_v50.ipynb`: Catalog download and caching logic
 - No network dependency after first download
@@ -446,11 +490,13 @@ src/drinking_galaxies/
 **Context**: Target is 2018+ desktop/laptop with 8+ GB RAM.
 
 **Architectural implications**:
+
 - Image processing uses full CPU (no battery optimization)
 - 6000×6000 pixel images processable in-memory
 - 60-second processing time acceptable
 
 **File impact**:
+
 - No memory-mapped files needed
 - No image streaming or chunking
 - Simple numpy arrays for all processing
@@ -462,21 +508,25 @@ src/drinking_galaxies/
 ### Potential Enhancements
 
 **If adding mobile support**:
+
 - Restructure to separate web API (`api/`) from core library
 - Add image streaming for large uploads
 - Optimize for lower memory footprint
 
 **If adding database**:
+
 - Move star catalog to PostgreSQL/PostGIS
 - Add user management and match history
 - Require migration to modular structure (`core/`, `data/`, `api/`)
 
 **If adding real-time features**:
+
 - WebSocket integration for progress updates
 - Background job queue (Celery, RQ)
 - Separate Streamlit limitations (single-process)
 
 **All changes must**:
+
 - Follow project constitution v1.0.0
 - Maintain clean root directory
 - Use synthetic test data

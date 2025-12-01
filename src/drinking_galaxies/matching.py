@@ -285,6 +285,7 @@ def ransac_match(
             # Update best match
             if score > best_score and num_matches >= min_inliers:
                 best_score = score
+                # Store additional target positions for verification (residual computation)
                 best_result = {
                     "scale": scale,
                     "rotation": rotation,
@@ -292,6 +293,7 @@ def ransac_match(
                     "score": score,
                     "num_inliers": num_matches,
                     "transformed_points": transformed,
+                    "target_positions": target,
                 }
 
         except (np.linalg.LinAlgError, ValueError):

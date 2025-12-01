@@ -16,6 +16,8 @@ from drinking_galaxies.astronomy import StarCatalog
 from drinking_galaxies.detection import detect_and_extract, draw_circles
 from drinking_galaxies.matching import match_to_sky_regions
 from drinking_galaxies.visualization import (
+    create_circles_on_stars,
+    create_composite_overlay,
     create_constellation_visualization,
     normalize_positions_to_canvas,
 )
@@ -126,15 +128,91 @@ def render_sky_visualization(match: dict) -> np.ndarray:
     if "stars" in match and "magnitude" in match["stars"].columns:
         magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
 
-    # Create visualization with magnitude-scaled stars
+    # Create visualization with magnitude-scaled stars (brighter background)
     canvas = create_constellation_visualization(
         image_shape,
         star_positions,
         magnitudes=magnitudes,
         line_segments=None,  # TODO: Add constellation lines in future
-        background_color=(10, 10, 30),  # Dark blue background
-        star_color=(255, 255, 255),
+        background_color=(20, 20, 50),  # Slightly brighter dark blue background
+        star_color=(255, 255, 200),  # Warm white/yellow for better visibility
         draw_lines=False,
+    )
+
+    return canvas
+
+
+def render_composite_overlay(match: dict) -> np.ndarray:
+    """Render composite overlay showing both circles and stars.
+
+    Args:
+        match: Match result dict with star positions, magnitudes, and transform
+
+    Returns:
+        RGB image with circles and stars overlaid
+    """
+    # Get circle centers
+    circle_centers = st.session_state.centers
+
+    # Get transformed star positions (already in image coordinates)
+    star_positions = match["transformed_points"]
+
+    # Get star magnitudes if available
+    magnitudes = None
+    if "stars" in match and "magnitude" in match["stars"].columns:
+        magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
+
+    # Create composite overlay
+    overlay = create_composite_overlay(
+        st.session_state.uploaded_image,
+        circle_centers,
+        star_positions,
+        magnitudes=magnitudes,
+        circle_color=(0, 255, 0),  # Green for circles
+        star_color=(255, 255, 0),  # Yellow for stars
+        alpha=0.7,  # Star transparency
+    )
+
+    return overlay
+
+
+def render_circles_on_stars(match: dict) -> np.ndarray:
+    """Render circle positions overlaid on star constellation pattern.
+
+    Args:
+        match: Match result dict with star positions, magnitudes, and transform
+
+    Returns:
+        RGB image with circles drawn on star pattern
+    """
+    # Get image shape
+    image_shape = st.session_state.uploaded_image.shape
+
+    # Get transformed star positions
+    transformed = match["transformed_points"]
+
+    # Normalize star positions to canvas coordinates
+    star_positions = normalize_positions_to_canvas(
+        transformed, (image_shape[0], image_shape[1]), margin=0.1
+    )
+
+    # Get detected circles (x, y, radius) - already in image coordinates
+    circles = st.session_state.circles
+
+    # Get star magnitudes if available
+    magnitudes = None
+    if "stars" in match and "magnitude" in match["stars"].columns:
+        magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
+
+    # Create visualization with actual circle outlines
+    canvas = create_circles_on_stars(
+        image_shape,
+        star_positions,
+        circles,
+        magnitudes=magnitudes,
+        background_color=(20, 20, 50),
+        star_color=(255, 255, 200),
+        circle_color=(0, 255, 0),
     )
 
     return canvas
@@ -307,6 +385,70 @@ def main():
                         f"RA: {match['ra']:.1f}°, Dec: {match['dec']:.1f}°",
                     )
 
+                    # Verification section
+                    st.divider()
+                    st.markdown("### ✅ Verification")
+
+                    # Basic star catalog info
+                    if "stars" in match:
+                        num_stars = len(match["stars"])
+                        st.caption(
+                            f"**{num_stars} catalog stars** (Yale Bright Star Catalog BSC5) in sampled region"
+                        )
+                        if "magnitude" in match["stars"].columns:
+                            mags = match["stars"]["magnitude"].dropna()
+                            if len(mags):
+                                st.caption(
+                                    f"Magnitude range: {mags.min():.1f} – {mags.max():.1f} (lower = brighter)"
+                                )
+
+                    # Residual error metrics (distance between transformed circles and nearest stars)
+                    if "target_positions" in match:
+                        tp = match["target_positions"]
+                        transformed = match["transformed_points"]
+                        if len(transformed) and len(tp):
+                            # Compute distances
+                            from scipy.spatial import distance_matrix
+
+                            dists = distance_matrix(transformed, tp).min(axis=1)
+                            mean_err = float(np.mean(dists))
+                            max_err = float(np.max(dists))
+                            st.caption(
+                                f"Residual error (normalized units): mean {mean_err:.3f}, max {max_err:.3f}"
+                            )
+                            st.caption(
+                                "Lower residuals indicate a tighter geometric fit to a real sky pattern."
+                            )
+
+                    # External verification links (use reliable sky map service)
+                    ra_deg = match["ra"] % 360.0
+                    dec_deg = match["dec"]
+                    in_the_sky_url = (
+                        "https://in-the-sky.org/skymap.php?"
+                        f"ra={ra_deg:.3f}&dec={dec_deg:.3f}&zoom=2"
+                    )
+                    wikisky_url = (
+                        "https://server1.wikisky.org/v2?"
+                        f"ra={ra_deg:.3f}&de={dec_deg:.3f}&zoom=4&show_grid=1&show_constellation_lines=1"
+                    )
+                    st.markdown(
+                        f"🔭 **External sky map:** [In-The-Sky.org]({in_the_sky_url}) | [Wikisky]({wikisky_url})"
+                    )
+                    st.caption(
+                        "Open one of the links to compare the star field at the matched RA/Dec with the pattern above."
+                    )
+
+                    # Copy-friendly coordinates
+                    coord_str = f"RA {ra_deg:.3f}°  Dec {dec_deg:.3f}°"
+                    st.text_input(
+                        "Coordinates (copy for external tools)",
+                        value=coord_str,
+                        disabled=True,
+                    )
+                    st.caption(
+                        "Paste RA/Dec into Stellarium desktop (Search → Position) for planetarium verification."
+                    )
+
                     # Display viewing location information
                     st.divider()
                     st.markdown("### 📍 Where Can You See This?")
@@ -357,9 +499,73 @@ def main():
 
                     st.divider()
 
-                    # Render sky visualization
-                    sky_image = render_sky_visualization(match)
-                    st.image(sky_image, use_container_width=True)
+                    # Advanced verification - show actual star data
+                    with st.expander("🔬 Advanced: Show Star Data"):
+                        st.caption(
+                            "This table shows the actual stars from the Yale Bright Star Catalog "
+                            "used in this match. Each star is a real celestial object with cataloged "
+                            "coordinates and brightness."
+                        )
+
+                        if "stars" in match:
+                            # Show star table with key columns
+                            star_display = match["stars"].copy()
+
+                            # Select relevant columns
+                            display_cols = []
+                            if "star_id" in star_display.columns:
+                                display_cols.append("star_id")
+                            if "ra" in star_display.columns:
+                                display_cols.append("ra")
+                            if "dec" in star_display.columns:
+                                display_cols.append("dec")
+                            if "magnitude" in star_display.columns:
+                                display_cols.append("magnitude")
+
+                            if display_cols:
+                                star_display = star_display[display_cols].head(20)
+                                st.dataframe(
+                                    star_display,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+
+                                if len(match["stars"]) > 20:
+                                    st.caption(
+                                        f"Showing 20 of {len(match['stars'])} stars in this region"
+                                    )
+
+                            st.caption(
+                                "**star_id**: Harvard Revised (HR) catalog number | "
+                                "**ra/dec**: Sky coordinates in degrees | "
+                                "**magnitude**: Brightness (lower = brighter)"
+                            )
+
+                    st.divider()
+
+                    # Render visualizations with tabs
+                    tab1, tab2, tab3 = st.tabs(
+                        ["⭐ Star Pattern", "📸 Stars on Photo", "🎯 Circles on Stars"]
+                    )
+
+                    with tab1:
+                        st.caption("Matched star constellation pattern")
+                        sky_image = render_sky_visualization(match)
+                        st.image(sky_image, use_container_width=True)
+
+                    with tab2:
+                        st.caption(
+                            "Matched stars (bright yellow) overlaid on your photo with circle centers (green)"
+                        )
+                        composite_image = render_composite_overlay(match)
+                        st.image(composite_image, use_container_width=True)
+
+                    with tab3:
+                        st.caption(
+                            "Your detected circles (green) drawn on the star pattern"
+                        )
+                        circles_on_stars_image = render_circles_on_stars(match)
+                        st.image(circles_on_stars_image, use_container_width=True)
 
                     # Navigation buttons
                     st.divider()
