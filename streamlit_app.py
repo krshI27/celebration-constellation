@@ -47,6 +47,82 @@ def to_gray_rgb(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
 
+def apply_photometric_stretch(image: np.ndarray) -> np.ndarray:
+    """Apply photometric stretching for better contrast.
+
+    Uses percentile-based normalization to enhance visibility.
+    """
+    try:
+        from astropy.visualization import ImageNormalize, PercentileInterval
+
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image
+
+        # Apply percentile normalization
+        interval = PercentileInterval(99.5)
+        norm = ImageNormalize(gray, interval=interval)
+        stretched = norm(gray)
+
+        # Convert back to uint8 and RGB
+        stretched_uint8 = (stretched * 255).astype(np.uint8)
+        return cv2.cvtColor(stretched_uint8, cv2.COLOR_GRAY2RGB)
+    except ImportError:
+        # Fall back to simple grayscale if astropy not available
+        return to_gray_rgb(image)
+
+
+def estimate_radius_bounds(image: np.ndarray) -> tuple[int, int]:
+    """Estimate min/max circle radii from image statistics.
+
+    Uses edge detection and blob analysis on downscaled image.
+    """
+    # Downscale for speed
+    h, w = image.shape[:2]
+    scale = 1024 / max(h, w)
+    if scale < 1.0:
+        small = cv2.resize(image, None, fx=scale, fy=scale)
+    else:
+        small = image
+        scale = 1.0
+
+    # Edge detection
+    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 1)
+    edges = cv2.Canny(blurred, 50, 150)
+
+    # Find contours as potential circles
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if len(contours) == 0:
+        # No contours found, use defaults
+        return 20, 200
+
+    # Estimate radii from contour bounding circles
+    radii = []
+    for cnt in contours:
+        if len(cnt) >= 5:
+            (x, y), radius = cv2.minEnclosingCircle(cnt)
+            radii.append(radius)
+
+    if len(radii) == 0:
+        return 20, 200
+
+    # Compute percentiles and scale back
+    radii = np.array(radii)
+    min_r = max(10, int(np.percentile(radii, 20) / scale))
+    max_r = min(300, int(np.percentile(radii, 85) / scale))
+
+    # Ensure reasonable bounds
+    if min_r >= max_r:
+        min_r = 20
+        max_r = 200
+
+    return min_r, max_r
+
+
 def initialize_session_state():
     """Initialize Streamlit session state variables."""
     if "uploaded_image" not in st.session_state:
@@ -167,11 +243,12 @@ def render_sky_visualization(match: dict) -> np.ndarray:
     return canvas
 
 
-def render_composite_overlay(match: dict) -> np.ndarray:
+def render_composite_overlay(match: dict, enhanced: bool = False) -> np.ndarray:
     """Render composite overlay showing both circles and stars.
 
     Args:
         match: Match result dict with star positions, magnitudes, and transform
+        enhanced: Apply photometric stretching if True
 
     Returns:
         RGB image with circles and stars overlaid
@@ -187,20 +264,44 @@ def render_composite_overlay(match: dict) -> np.ndarray:
     # Theme highlight color
     theme_rgb = get_theme_primary_rgb()
 
-    # Use grayscale base image for better contrast
-    gray_base = to_gray_rgb(st.session_state.uploaded_image)
+    # Apply enhanced rendering if enabled
+    if enhanced:
+        gray_base = apply_photometric_stretch(st.session_state.uploaded_image)
+    else:
+        gray_base = to_gray_rgb(st.session_state.uploaded_image)
 
     # Do not show circle centers in overlay
     empty_centers = np.empty((0, 2), dtype=np.int32)
 
     # Create composite overlay: grayscale photo + theme-colored stars
+    # If B-V color index present, map to per-star RGB colors
+    per_star_colors = None
+    if "stars" in match and "b_v" in match["stars"].columns:
+        bvs = match["stars"]["b_v"].values[: len(star_positions)]
+        # Map B-V to RGB: blue (hot) to red (cool)
+        per_star_colors = []
+        for bv in bvs:
+            if np.isnan(bv):
+                per_star_colors.append(theme_rgb)
+            elif bv <= 0.0:
+                per_star_colors.append((180, 200, 255))
+            elif bv <= 0.3:
+                per_star_colors.append((220, 230, 255))
+            elif bv <= 0.6:
+                per_star_colors.append((255, 255, 255))
+            elif bv <= 1.0:
+                per_star_colors.append((255, 235, 180))
+            else:
+                per_star_colors.append((255, 210, 150))
+        per_star_colors = np.array(per_star_colors, dtype=np.uint8)
+
     overlay = create_composite_overlay(
         gray_base,
         empty_centers,
         star_positions,
         magnitudes=magnitudes,
         circle_color=theme_rgb,
-        star_color=theme_rgb,
+        star_color=per_star_colors if per_star_colors is not None else theme_rgb,
         alpha=1.0,
         star_scale_factor=24.0,
     )
@@ -208,11 +309,12 @@ def render_composite_overlay(match: dict) -> np.ndarray:
     return overlay
 
 
-def render_circles_on_stars(match: dict) -> np.ndarray:
+def render_circles_on_stars(match: dict, enhanced: bool = False) -> np.ndarray:
     """Render circle positions overlaid on star constellation pattern.
 
     Args:
         match: Match result dict with star positions, magnitudes, and transform
+        enhanced: Apply enhanced rendering if True (currently unused for star-only view)
 
     Returns:
         RGB image with circles drawn on star pattern
@@ -239,14 +341,36 @@ def render_circles_on_stars(match: dict) -> np.ndarray:
     # Theme color for circle outlines
     theme_rgb = get_theme_primary_rgb()
 
-    # Create star-only visualization first (keep warm star color)
+    # Build per-star colors from B-V if available
+    per_star_colors = None
+    if "stars" in match and "b_v" in match["stars"].columns:
+        bvs = match["stars"]["b_v"].values[: len(star_positions)]
+        per_star_colors = []
+        for bv in bvs:
+            if np.isnan(bv):
+                per_star_colors.append((255, 255, 200))
+            elif bv <= 0.0:
+                per_star_colors.append((180, 200, 255))
+            elif bv <= 0.3:
+                per_star_colors.append((220, 230, 255))
+            elif bv <= 0.6:
+                per_star_colors.append((255, 255, 255))
+            elif bv <= 1.0:
+                per_star_colors.append((255, 235, 180))
+            else:
+                per_star_colors.append((255, 210, 150))
+        per_star_colors = np.array(per_star_colors, dtype=np.uint8)
+
+    # Create star-only visualization first (use per-star colors if available)
     canvas = create_constellation_visualization(
         image_shape,
         star_positions,
         magnitudes=magnitudes,
         line_segments=None,
         background_color=(20, 20, 50),
-        star_color=(255, 255, 200),
+        star_color=(
+            per_star_colors if per_star_colors is not None else (255, 255, 200)
+        ),
         draw_lines=False,
         star_scale_factor=24.0,
     )
@@ -358,61 +482,43 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
 
-        min_radius = st.slider(
-            "Min Radius",
-            min_value=10,
-            max_value=100,
-            value=20,
-            step=5,
-            help="Minimum circle size in pixels",
+        detection_scale = st.selectbox(
+            "Detection Scale",
+            options=["Auto", "Close-up", "Wide"],
+            index=0,
+            help="Auto-tunes circle sizes; choose Close-up for large objects or Wide for small/far objects",
         )
 
-        max_radius = st.slider(
-            "Max Radius",
-            min_value=50,
-            max_value=500,
-            value=200,
-            step=10,
-            help="Maximum circle size in pixels",
+        search_depth = st.selectbox(
+            "Search Depth",
+            options=["Fast", "Balanced", "Thorough"],
+            index=1,
+            help="Fast=50 regions, Balanced=100, Thorough=200 (slower)",
         )
 
-        num_regions = st.slider(
-            "Sky Regions",
-            min_value=50,
-            max_value=500,
-            value=100,
-            step=50,
-            help="More regions = slower but better coverage",
+        num_regions = {"Fast": 50, "Balanced": 100, "Thorough": 200}[search_depth]
+        if num_regions > 100:
+            st.caption("⏱️ Estimated time: 30–90 seconds")
+
+        st.divider()
+
+        enhanced_render = st.checkbox(
+            "Enhanced Rendering",
+            value=False,
+            help="Apply photometric stretching and improved star glow for better aesthetics",
         )
 
-        if num_regions > 200:
-            st.caption("⏱️ Estimated time: 60-90 seconds")
-        elif num_regions > 100:
-            st.caption("⏱️ Estimated time: 30-60 seconds")
+    # Minimal derived detection parameters (auto-tuned defaults)
+    quality_threshold = 0.15
+    max_circles = 50
 
-    # Advanced settings in main content (collapsed by default)
-    with st.expander("🔧 Advanced Settings"):
-        adv_col1, adv_col2 = st.columns(2)
-
-        with adv_col1:
-            max_circles = st.number_input(
-                "Max Circles",
-                min_value=10,
-                max_value=100,
-                value=50,
-                step=5,
-                help="Maximum circles to detect",
-            )
-
-        with adv_col2:
-            quality_threshold = st.slider(
-                "Quality Filter",
-                min_value=0.0,
-                max_value=0.5,
-                value=0.15,
-                step=0.05,
-                help="Higher = stricter filtering",
-            )
+    # Coarse min/max radii based on scale; Auto estimates from image
+    if detection_scale == "Close-up":
+        min_radius, max_radius = 40, 150
+    elif detection_scale == "Wide":
+        min_radius, max_radius = 15, 250
+    else:
+        min_radius, max_radius = 20, 200
 
     # File upload
     uploaded_file = st.file_uploader(
@@ -424,6 +530,21 @@ def main():
         # Process image
         if st.session_state.uploaded_image is None:
             with st.spinner("Detecting circular objects..."):
+                # Load image first for auto-tuning
+                from PIL import Image
+
+                pil_image = Image.open(uploaded_file)
+                temp_image = np.array(pil_image.convert("RGB"))
+
+                # Auto-tune radii if needed
+                if detection_scale == "Auto":
+                    with st.spinner("Auto-tuning detection parameters..."):
+                        min_radius, max_radius = estimate_radius_bounds(temp_image)
+                        st.caption(
+                            f"🔍 Auto-detected range: {min_radius}–{max_radius}px"
+                        )
+
+                uploaded_file.seek(0)  # Reset file pointer
                 image, circles, centers = process_uploaded_image(
                     uploaded_file,
                     min_radius,
@@ -449,8 +570,12 @@ def main():
         st.session_state.show_centers = False
 
         if st.session_state.circles is not None:
-            # Use grayscale image for better visibility of circles
-            base = to_gray_rgb(st.session_state.uploaded_image)
+            # Apply enhanced rendering if enabled
+            if enhanced_render:
+                base = apply_photometric_stretch(st.session_state.uploaded_image)
+            else:
+                base = to_gray_rgb(st.session_state.uploaded_image)
+
             if st.session_state.show_circles:
                 annotated_image = draw_circles(
                     base,
@@ -662,7 +787,9 @@ def main():
 
             with tab1:
                 st.caption("Stars (yellow) overlaid on your photo with centers (green)")
-                composite_image = render_composite_overlay(match)
+                composite_image = render_composite_overlay(
+                    match, enhanced=enhanced_render
+                )
                 st.image(composite_image, use_container_width=True)
 
             with tab2:
@@ -672,7 +799,9 @@ def main():
 
             with tab3:
                 st.caption("Detected circles (green) on star pattern")
-                circles_on_stars_image = render_circles_on_stars(match)
+                circles_on_stars_image = render_circles_on_stars(
+                    match, enhanced=enhanced_render
+                )
                 st.image(circles_on_stars_image, use_container_width=True)
 
             # Bottom-centered navigation

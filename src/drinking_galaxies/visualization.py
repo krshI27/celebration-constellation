@@ -45,7 +45,7 @@ def render_stars_with_magnitude(
     canvas: np.ndarray,
     star_positions: np.ndarray,
     magnitudes: np.ndarray,
-    color: tuple[int, int, int] = (255, 255, 255),
+    color: tuple[int, int, int] | np.ndarray = (255, 255, 255),
     scale_factor: float = 12.0,
 ) -> np.ndarray:
     """Render stars with magnitude-scaled sizes.
@@ -66,7 +66,11 @@ def render_stars_with_magnitude(
         >>> mags = np.array([1.0, 5.0])
         >>> result = render_stars_with_magnitude(canvas, positions, mags)
     """
-    for (x, y), mag in zip(star_positions, magnitudes):
+    use_per_star_color = isinstance(color, np.ndarray) and len(color) == len(
+        star_positions
+    )
+
+    for idx, ((x, y), mag) in enumerate(zip(star_positions, magnitudes)):
         radius = magnitude_to_radius(mag, scale_factor)
 
         # Convert to integer coordinates
@@ -74,18 +78,29 @@ def render_stars_with_magnitude(
 
         # Check bounds
         if 0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]:
+            # Determine color per star if provided
+            c = color[idx] if use_per_star_color else color
+
             # Draw filled circle
-            cv2.circle(canvas, (x_int, y_int), radius, color, -1)
+            cv2.circle(canvas, (x_int, y_int), radius, tuple(int(v) for v in c), -1)
 
             # Add glow effect to all stars for better visibility
             glow_radius = radius + 3
-            glow_color = tuple(int(c * 0.7) for c in color)
+            glow_color = (
+                tuple(int(v) for v in (color[idx] * 0.7))
+                if use_per_star_color
+                else tuple(int(v * 0.7) for v in color)
+            )
             cv2.circle(canvas, (x_int, y_int), glow_radius, glow_color, 2)
 
             # Extra bright glow for very bright stars (mag < 3)
             if mag < 3.0:
                 outer_glow_radius = radius + 5
-                outer_glow_color = tuple(int(c * 0.3) for c in color)
+                outer_glow_color = (
+                    tuple(int(v) for v in (color[idx] * 0.3))
+                    if use_per_star_color
+                    else tuple(int(v * 0.3) for v in color)
+                )
                 cv2.circle(
                     canvas, (x_int, y_int), outer_glow_radius, outer_glow_color, 1
                 )
@@ -171,7 +186,7 @@ def create_constellation_visualization(
     magnitudes: Optional[np.ndarray] = None,
     line_segments: Optional[list[tuple[int, int]]] = None,
     background_color: tuple[int, int, int] = (10, 10, 30),
-    star_color: tuple[int, int, int] = (255, 255, 255),
+    star_color: tuple[int, int, int] | np.ndarray = (255, 255, 255),
     line_color: tuple[int, int, int] = (100, 150, 255),
     draw_lines: bool = True,
     star_scale_factor: float = 12.0,
