@@ -17,6 +17,35 @@ Find your table's hidden constellation! Upload a photo of bottles, plates, and g
 
 ✨ **v0.2.0**: Constellation name identification with full IAU constellation data
 
+## Configuration
+
+### Detection Parameters
+
+- **Image Dimensions**: 300×300 to 6000×6000 pixels (recommended: 1500-3000px)
+- **Circle Radius Range**: 20-200 pixels (adjustable for close-up or wide shots)
+- **Quality Threshold**: 0.15 (lower = more detections, higher = fewer false positives)
+- **Maximum Circles**: 50 (automatic spatial sampling if more detected)
+
+### Matching Parameters
+
+- **RANSAC Iterations**: 1000 per sky region (99% confidence)
+- **Sky Regions**: 100 (adjustable 20-200 in UI sidebar)
+- **Inlier Threshold**: 0.05 (normalized coordinate space)
+
+### Performance Expectations
+
+- Detection: < 5 seconds for typical images
+- Matching: 30-60 seconds for 100 sky regions
+- Star catalog: 10-second VizieR timeout with instant cache fallback
+
+### Adjusting Parameters
+
+Most parameters have sensible defaults and don't require tuning. However:
+
+- **Increase sky regions** (150-200) if no good matches found
+- **Decrease sky regions** (20-50) for faster results when testing
+- **Adjust quality threshold** in code if too many/few circles detected
+
 ## Example Output
 
 ### Circle Detection

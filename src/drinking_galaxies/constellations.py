@@ -93,9 +93,7 @@ class ConstellationCatalog:
             return catalog
 
         except Exception as e:
-            print(
-                f"Warning: Failed to download constellation boundaries: {e}"
-            )
+            print(f"Warning: Failed to download constellation boundaries: {e}")
             print("App will continue without constellation identification")
             return None
 

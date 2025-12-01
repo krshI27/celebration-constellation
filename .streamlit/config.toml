@@ -1,0 +1,19 @@
+[theme]
+# Drinking Galaxies - Dark Astronomy Theme
+# Optimized for PWA mobile viewing with high contrast
+
+primaryColor = "#00D9FF"           # Bright cyan for CTAs and links
+backgroundColor = "#0E1117"         # Deep space black
+secondaryBackgroundColor = "#1E2130"  # Slightly lighter panels
+textColor = "#FAFAFA"              # Off-white for readability
+font = "sans serif"
+
+[server]
+# Enable file watcher for development
+fileWatcherType = "auto"
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+# PWA-friendly settings
+gatherUsageStats = false

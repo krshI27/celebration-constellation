@@ -152,10 +152,7 @@ class StarCatalog:
 
         # Try loading from local supplemental data first
         local_catalog_path = (
-            Path(__file__).parent.parent.parent
-            / "data"
-            / "supplemental"
-            / "catalog.gz"
+            Path(__file__).parent.parent.parent / "data" / "supplemental" / "catalog.gz"
         )
 
         if local_catalog_path.exists():
@@ -177,7 +174,16 @@ class StarCatalog:
 
         # Query Yale BSC5 catalog (V/50)
         vizier = Vizier(
-            columns=["HR", "RAJ2000", "DEJ2000", "Vmag", "pmRA", "pmDE"],
+            columns=[
+                "HR",
+                "RAJ2000",
+                "DEJ2000",
+                "Vmag",
+                "pmRA",
+                "pmDE",
+                "B-V",
+                "SpType",
+            ],
             row_limit=-1,
         )
 
@@ -197,6 +203,8 @@ class StarCatalog:
                 "Vmag": "magnitude",
                 "pmRA": "pm_ra",
                 "pmDE": "pm_dec",
+                "B-V": "b_v",
+                "SpType": "spectral_type",
             }
         )
 
@@ -215,7 +223,7 @@ class StarCatalog:
             catalog["dec"] = coords.dec.deg
 
         # Convert other numeric columns
-        numeric_cols = ["magnitude", "pm_ra", "pm_dec"]
+        numeric_cols = ["magnitude", "pm_ra", "pm_dec", "b_v"]
         for col in numeric_cols:
             if col in catalog.columns:
                 catalog[col] = pd.to_numeric(catalog[col], errors="coerce")
