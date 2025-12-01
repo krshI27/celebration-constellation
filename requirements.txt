@@ -1,0 +1,9 @@
+# Minimal runtime dependencies for Streamlit Community Cloud
+streamlit>=1.31,<2
+numpy>=2.0
+opencv-python-headless>=4.8
+pillow>=10.0
+scipy>=1.11
+pandas>=2.0
+astropy>=5.3
+astroquery>=0.4
