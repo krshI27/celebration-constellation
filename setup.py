@@ -6,7 +6,6 @@ setup(
     name="celebration-constellation",
     version="0.1.0",
     author="Maximilian Sperlich",
-    author_email="your.email@example.com",
     description="Star constellation matching from table photos",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
