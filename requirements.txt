@@ -1,12 +1,11 @@
 # Minimal runtime dependencies for Streamlit Community Cloud
+# NOTE: Use opencv-python-headless (no GUI) for cloud deployment
 streamlit>=1.31,<2
-numpy>=2.0
+numpy>=2.0,<3
 opencv-python-headless>=4.8
 pillow>=10.0
 scipy>=1.11
 pandas>=2.0
 astropy>=5.3
 astroquery>=0.4
-
-# Install local package in editable mode
--e .
+scikit-image>=0.25
