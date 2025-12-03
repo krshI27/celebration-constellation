@@ -7,3 +7,6 @@ scipy>=1.11
 pandas>=2.0
 astropy>=5.3
 astroquery>=0.4
+
+# Install local package in editable mode
+-e .
