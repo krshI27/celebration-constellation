@@ -8,7 +8,14 @@ This app provides an interactive interface for:
 """
 
 import os
+import sys
 from pathlib import Path
+
+# Add src directory to Python path for Streamlit Cloud deployment
+# This ensures the celebration_constellation package can be imported
+_src_path = Path(__file__).parent / "src"
+if _src_path.exists() and str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
 
 # Configure OpenCV for headless environments (Streamlit Cloud)
 # Prevents "libGL.so.1: cannot open shared object file" errors
@@ -80,7 +87,9 @@ def apply_photometric_stretch(image: np.ndarray) -> np.ndarray:
         return to_gray_rgb(image)
 
 
-def get_per_star_colors(b_v_values: np.ndarray, theme_rgb: tuple[int, int, int] = (0, 217, 255)) -> np.ndarray:
+def get_per_star_colors(
+    b_v_values: np.ndarray, theme_rgb: tuple[int, int, int] = (0, 217, 255)
+) -> np.ndarray:
     """Map B-V color index to RGB colors (blue/hot to red/cool).
 
     Args:
@@ -236,11 +245,12 @@ def find_constellation_matches(centers: np.ndarray, num_regions: int = 100):
     return matches
 
 
-def render_sky_visualization(match: dict) -> np.ndarray:
+def render_sky_visualization(match: dict, brightness: float = 1.0) -> np.ndarray:
     """Render star constellation with magnitude-scaled stars.
 
     Args:
         match: Match result dict with star positions, magnitudes, and transform
+        brightness: Multiplier for star size (1.0 = normal)
 
     Returns:
         RGB image with enhanced star visualization
@@ -248,32 +258,90 @@ def render_sky_visualization(match: dict) -> np.ndarray:
     # Get image shape
     image_shape = st.session_state.uploaded_image.shape
 
-    # Get transformed circle positions
-    transformed = match["transformed_points"]
-
-    # Normalize to canvas coordinates
-    star_positions = normalize_positions_to_canvas(
-        transformed, (image_shape[0], image_shape[1]), margin=0.1
-    )
+    # Get star positions in stereographic projection space and transform to image coords
+    target_positions = match.get("target_positions")
+    if target_positions is None:
+        star_positions = np.empty((0, 2))
+    else:
+        # Apply inverse transform to map star positions to image coordinates
+        star_positions = apply_inverse_transform(
+            target_positions,
+            match["scale"],
+            match["rotation"],
+            match["translation"],
+        )
 
     # Get star magnitudes if available
     magnitudes = None
     if "stars" in match and "magnitude" in match["stars"].columns:
         magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
 
-    # Create visualization with magnitude-scaled stars (brighter background)
-    canvas = create_constellation_visualization(
-        image_shape,
-        star_positions,
-        magnitudes=magnitudes,
-        line_segments=None,  # TODO: Add constellation lines in future
-        background_color=(20, 20, 50),  # Slightly brighter dark blue background
-        star_color=(255, 255, 200),  # Warm white/yellow for better visibility
-        draw_lines=False,
-        star_scale_factor=16.0,
-    )
+    # Get per-star colors from B-V temperature index
+    per_star_colors = None
+    if "stars" in match and "b_v" in match["stars"].columns:
+        bvs = match["stars"]["b_v"].values[: len(star_positions)]
+        per_star_colors = get_per_star_colors(bvs, (255, 255, 220))
+
+    # Create dark sky background
+    canvas = np.full(image_shape, (5, 5, 15), dtype=np.uint8)
+
+    # Render stars with magnitude scaling and B-V colors
+    for idx, (x, y) in enumerate(star_positions):
+        x_int, y_int = int(x), int(y)
+        if not (0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]):
+            continue
+
+        # Get magnitude for this star
+        mag = magnitudes[idx] if magnitudes is not None else 3.0
+        mag_clamped = max(0.0, min(6.0, mag))
+
+        # Radius based on magnitude (brighter = larger), scaled by brightness multiplier
+        base_radius = 35.0 * np.exp(-mag_clamped / 3.0)
+        radius = max(4, min(60, int(base_radius * brightness)))
+
+        # Get color for this star
+        if per_star_colors is not None:
+            color = tuple(int(c) for c in per_star_colors[idx])
+        else:
+            color = (255, 255, 220)
+
+        # Draw filled circle
+        cv2.circle(canvas, (x_int, y_int), radius, color, -1)
 
     return canvas
+
+
+def apply_inverse_transform(
+    points: np.ndarray,
+    scale: float,
+    rotation: float,
+    translation: np.ndarray,
+) -> np.ndarray:
+    """Apply inverse 2D similarity transform to map points to image space.
+
+    Given the transform that maps circles -> stars:
+        transformed = scale * (circles @ R.T) + translation
+
+    The inverse maps stars -> image space:
+        image_coords = (stars - translation) @ R / scale
+
+    Args:
+        points: Points to transform (N, 2) in star/target space
+        scale: Scale factor from original transform
+        rotation: Rotation angle in radians from original transform
+        translation: Translation vector (2,) from original transform
+
+    Returns:
+        Transformed points in image coordinate space
+    """
+    # Build rotation matrix (same as forward transform)
+    R = np.array(
+        [[np.cos(rotation), -np.sin(rotation)], [np.sin(rotation), np.cos(rotation)]]
+    )
+
+    # Inverse: subtract translation, apply inverse rotation (R.T = R^-1), divide by scale
+    centered = points - translation
+    return (centered @ R) / scale
 
 
 def render_composite_overlay(match: dict) -> np.ndarray:
@@ -287,8 +355,19 @@ def render_composite_overlay(match: dict) -> np.ndarray:
     Returns:
         RGB image with circles and stars overlaid
     """
-    # Get transformed star positions (already in image coordinates)
-    star_positions = match["transformed_points"]
+    # Get star positions in stereographic projection space
+    target_positions = match.get("target_positions")
+    if target_positions is None:
+        # Fallback to empty if not available
+        star_positions = np.empty((0, 2))
+    else:
+        # Apply inverse transform to map star positions to image coordinates
+        star_positions = apply_inverse_transform(
+            target_positions,
+            match["scale"],
+            match["rotation"],
+            match["translation"],
+        )
 
     # Get star magnitudes if available
     magnitudes = None
@@ -335,9 +414,7 @@ def render_composite_overlay(match: dict) -> np.ndarray:
 
             if 0 <= x_int < star_layer.shape[1] and 0 <= y_int < star_layer.shape[0]:
                 # Draw filled circle with theme color (same as circles)
-                cv2.circle(
-                    star_layer, (x_int, y_int), radius, theme_rgb, -1
-                )
+                cv2.circle(star_layer, (x_int, y_int), radius, theme_rgb, -1)
 
                 # Add very prominent glow effect
                 glow_radius = radius + 8
@@ -375,13 +452,14 @@ def render_composite_overlay(match: dict) -> np.ndarray:
     return overlay
 
 
-def render_circles_on_stars(match: dict) -> np.ndarray:
+def render_circles_on_stars(match: dict, brightness: float = 1.0) -> np.ndarray:
     """Render circle positions overlaid on star constellation pattern.
 
     Uses per-star colors based on B-V temperature index.
 
     Args:
         match: Match result dict with star positions, magnitudes, and transform
+        brightness: Multiplier for star size (1.0 = normal)
 
     Returns:
         RGB image with circles drawn on star pattern
@@ -389,13 +467,18 @@ def render_circles_on_stars(match: dict) -> np.ndarray:
     # Get image shape
     image_shape = st.session_state.uploaded_image.shape
 
-    # Get transformed star positions
-    transformed = match["transformed_points"]
-
-    # Normalize star positions to canvas coordinates
-    star_positions = normalize_positions_to_canvas(
-        transformed, (image_shape[0], image_shape[1]), margin=0.1
-    )
+    # Get star positions in stereographic projection and transform to image coords
+    target_positions = match.get("target_positions")
+    if target_positions is None:
+        star_positions = np.empty((0, 2))
+    else:
+        # Apply inverse transform to map star positions to image coordinates
+        star_positions = apply_inverse_transform(
+            target_positions,
+            match["scale"],
+            match["rotation"],
+            match["translation"],
+        )
 
     # Get detected circles (x, y, radius) - already in image coordinates
     circles = st.session_state.circles
@@ -408,25 +491,37 @@ def render_circles_on_stars(match: dict) -> np.ndarray:
     # Theme color for circle outlines
     theme_rgb = get_theme_primary_rgb()
 
-    # Build per-star colors from B-V if available
+    # Get per-star colors from B-V temperature index
     per_star_colors = None
     if "stars" in match and "b_v" in match["stars"].columns:
         bvs = match["stars"]["b_v"].values[: len(star_positions)]
-        per_star_colors = get_per_star_colors(bvs, (255, 255, 200))
+        per_star_colors = get_per_star_colors(bvs, (255, 255, 220))
 
-    # Create star-only visualization first (use per-star colors if available)
-    canvas = create_constellation_visualization(
-        image_shape,
-        star_positions,
-        magnitudes=magnitudes,
-        line_segments=None,
-        background_color=(20, 20, 50),
-        star_color=(
-            per_star_colors if per_star_colors is not None else (255, 255, 200)
-        ),
-        draw_lines=False,
-        star_scale_factor=24.0,
-    )
+    # Create dark sky background
+    canvas = np.full(image_shape, (5, 5, 15), dtype=np.uint8)
+
+    # Render stars with magnitude scaling and B-V colors
+    for idx, (x, y) in enumerate(star_positions):
+        x_int, y_int = int(x), int(y)
+        if not (0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]):
+            continue
+
+        # Get magnitude for this star
+        mag = magnitudes[idx] if magnitudes is not None else 3.0
+        mag_clamped = max(0.0, min(6.0, mag))
+
+        # Radius based on magnitude (brighter = larger), scaled by brightness multiplier
+        base_radius = 35.0 * np.exp(-mag_clamped / 3.0)
+        radius = max(4, min(60, int(base_radius * brightness)))
+
+        # Get color for this star
+        if per_star_colors is not None:
+            color = tuple(int(c) for c in per_star_colors[idx])
+        else:
+            color = (255, 255, 220)
+
+        # Draw filled circle
+        cv2.circle(canvas, (x_int, y_int), radius, color, -1)
 
     # Draw circle fills and outlines in theme color (no centers)
     if circles is not None and len(circles):
@@ -561,6 +656,15 @@ def main():
             value=0.10,
             step=0.01,
             help="Lower = more detections (catches more, may have false positives). Higher = stricter (fewer false positives, may miss some)",
+        )
+
+        star_brightness = st.slider(
+            "Star Brightness",
+            min_value=0.5,
+            max_value=3.0,
+            value=1.0,
+            step=0.1,
+            help="Adjust the size of stars in the visualization (1.0 = normal)",
         )
 
         num_regions = {"Fast": 50, "Balanced": 100, "Thorough": 200}[search_depth]
@@ -841,12 +945,12 @@ def main():
 
             with tab2:
                 st.caption("Matched star constellation pattern")
-                sky_image = render_sky_visualization(match)
+                sky_image = render_sky_visualization(match, star_brightness)
                 st.image(sky_image, use_container_width=True)
 
             with tab3:
                 st.caption("Detected circles on star pattern (colored by temperature)")
-                circles_on_stars_image = render_circles_on_stars(match)
+                circles_on_stars_image = render_circles_on_stars(match, star_brightness)
                 st.image(circles_on_stars_image, use_container_width=True)
 
             # Bottom-centered navigation
