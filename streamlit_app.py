@@ -7,7 +7,12 @@ This app provides an interactive interface for:
 - Swipeable image comparison between photo and sky
 """
 
+import os
 from pathlib import Path
+
+# Configure OpenCV for headless environments (Streamlit Cloud)
+# Prevents "libGL.so.1: cannot open shared object file" errors
+os.environ["LIBGL_ALWAYS_INDIRECT"] = "1"
 
 import cv2
 import numpy as np
@@ -308,47 +313,63 @@ def render_composite_overlay(match: dict) -> np.ndarray:
 
     # Build overlay with per-star colors if available
     if per_star_colors is not None:
-        from celebration_constellation.visualization import magnitude_to_radius
+        # Ensure gray_base is 3-channel RGB before operations
+        if len(gray_base.shape) == 2:
+            gray_base = cv2.cvtColor(gray_base, cv2.COLOR_GRAY2RGB)
+        elif gray_base.shape[2] == 1:
+            gray_base = cv2.cvtColor(gray_base[:, :, 0], cv2.COLOR_GRAY2RGB)
 
         overlay = gray_base.copy()
         star_layer = np.zeros_like(gray_base)
 
-        # Render stars with individual colors and magnitude scaling
-        for (x, y), mag, color in zip(
+        # Render stars with theme color and magnitude scaling
+        for (x, y), mag in zip(
             star_positions,
             magnitudes if magnitudes is not None else [3.0] * len(star_positions),
-            per_star_colors,
         ):
-            radius = magnitude_to_radius(mag, 24.0)
+            # Use larger radius for better visibility (not clamped by magnitude_to_radius)
+            # Brighter stars (lower magnitude) get larger radii
+            mag_clamped = max(0.0, min(6.0, mag))
+            radius = max(6, min(50, int(40.0 * np.exp(-mag_clamped / 3.0))))
             x_int, y_int = int(x), int(y)
 
             if 0 <= x_int < star_layer.shape[1] and 0 <= y_int < star_layer.shape[0]:
-                # Draw filled circle with per-star color
+                # Draw filled circle with theme color (same as circles)
                 cv2.circle(
-                    star_layer, (x_int, y_int), radius, tuple(int(c) for c in color), -1
+                    star_layer, (x_int, y_int), radius, theme_rgb, -1
                 )
 
-                # Add glow effect
-                glow_radius = radius + 4
-                glow_color = tuple(int(c * 0.6) for c in color)
-                cv2.circle(star_layer, (x_int, y_int), glow_radius, glow_color, 2)
+                # Add very prominent glow effect
+                glow_radius = radius + 8
+                glow_color = tuple(int(c * 0.9) for c in theme_rgb)
+                cv2.circle(star_layer, (x_int, y_int), glow_radius, glow_color, 4)
 
-        # Apply Gaussian blur for natural PSF-like glow
-        star_layer = cv2.GaussianBlur(star_layer, (7, 7), 2.0)
+        # Apply light Gaussian blur for soft glow
+        star_layer = cv2.GaussianBlur(star_layer, (5, 5), 1.0)
 
-        # Blend with full opacity
-        overlay = cv2.addWeighted(gray_base, 1.0, star_layer, 1.0, 0)
+        # Darken the grayscale base significantly for better star visibility
+        darkened_base = (gray_base * 0.35).astype(np.uint8)
+
+        # Blend with very high star prominence
+        overlay = cv2.addWeighted(darkened_base, 1.0, star_layer, 3.0, 0)
     else:
-        # Fall back to single-color rendering
+        # Fall back to single-color rendering with darkened background
+        # Ensure gray_base is 3-channel RGB before operations
+        if len(gray_base.shape) == 2:
+            gray_base = cv2.cvtColor(gray_base, cv2.COLOR_GRAY2RGB)
+        elif gray_base.shape[2] == 1:
+            gray_base = cv2.cvtColor(gray_base[:, :, 0], cv2.COLOR_GRAY2RGB)
+
+        darkened_base = (gray_base * 0.35).astype(np.uint8)
         overlay = create_composite_overlay(
-            gray_base,
+            darkened_base,
             empty_centers,
             star_positions,
             magnitudes=magnitudes,
             circle_color=theme_rgb,
             star_color=theme_rgb,
-            alpha=1.0,
-            star_scale_factor=24.0,
+            alpha=3.0,
+            star_scale_factor=40.0,
         )
 
     return overlay
@@ -407,11 +428,16 @@ def render_circles_on_stars(match: dict) -> np.ndarray:
         star_scale_factor=24.0,
     )
 
-    # Draw only circle outlines in theme color (no centers)
+    # Draw circle fills and outlines in theme color (no centers)
     if circles is not None and len(circles):
         for x, y, r in circles:
             x_int, y_int, r_int = int(x), int(y), int(r)
             if 0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]:
+                # Draw semi-transparent fill
+                fill_layer = np.zeros_like(canvas)
+                cv2.circle(fill_layer, (x_int, y_int), r_int, theme_rgb, -1)
+                canvas = cv2.addWeighted(canvas, 1.0, fill_layer, 0.35, 0)
+                # Draw outline on top
                 cv2.circle(canvas, (x_int, y_int), r_int, theme_rgb, 4)
 
     return canvas
@@ -528,12 +554,20 @@ def main():
             help="Fast=50 regions, Balanced=100, Thorough=200 (slower)",
         )
 
+        quality_threshold = st.slider(
+            "Detection Quality",
+            min_value=0.05,
+            max_value=0.35,
+            value=0.10,
+            step=0.01,
+            help="Lower = more detections (catches more, may have false positives). Higher = stricter (fewer false positives, may miss some)",
+        )
+
         num_regions = {"Fast": 50, "Balanced": 100, "Thorough": 200}[search_depth]
         if num_regions > 100:
             st.caption(
                 "⏱️ Estimated time: 30–90 seconds"
             )  # Minimal derived detection parameters (auto-tuned defaults)
-    quality_threshold = 0.15
     max_circles = 50
 
     # Coarse min/max radii based on scale; Auto estimates from image
@@ -603,6 +637,7 @@ def main():
                     show_centers=False,
                     circle_color=get_theme_primary_rgb(),
                     thickness=4,
+                    fill_alpha=0.35,
                 )
             else:
                 annotated_image = base
@@ -851,7 +886,7 @@ def main():
                     st.rerun()
 
         # Reset button
-        if st.button("🔄 Upload New Image"):
+        if st.button("🔄 Start Over"):
             st.session_state.uploaded_image = None
             st.session_state.circles = None
             st.session_state.centers = None
