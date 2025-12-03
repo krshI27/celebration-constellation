@@ -124,3 +124,6 @@ test_table_image.py
 
 # Streamlit secrets (never commit)
 .streamlit/secrets.toml
+
+# Internal reports (not for public)
+docs/.reports/
