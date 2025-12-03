@@ -12,8 +12,8 @@ from typing import Optional
 import numpy as np
 from scipy.spatial import distance_matrix
 
-from drinking_galaxies.constellations import ConstellationCatalog
-from drinking_galaxies.visibility import (
+from celebration_constellation.constellations import ConstellationCatalog
+from celebration_constellation.visibility import (
     calculate_best_viewing_months,
     calculate_visibility_range,
     get_example_cities,
@@ -343,7 +343,7 @@ def match_to_sky_regions(
         Each result includes: ra, dec, score, num_inliers, constellation, visibility, viewing_regions
 
     Example:
-        >>> from drinking_galaxies.astronomy import StarCatalog
+        >>> from celebration_constellation.astronomy import StarCatalog
         >>> catalog = StarCatalog()
         >>> regions = catalog.search_sky_regions(num_samples=50)
         >>> # Add stereographic projections

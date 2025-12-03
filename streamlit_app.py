@@ -1,4 +1,4 @@
-"""Streamlit web application for Drinking Galaxies.
+"""Streamlit web application for Celebration Constellation.
 
 This app provides an interactive interface for:
 - Uploading table photos
@@ -13,10 +13,10 @@ import cv2
 import numpy as np
 import streamlit as st
 
-from drinking_galaxies.astronomy import StarCatalog
-from drinking_galaxies.detection import detect_and_extract, draw_circles
-from drinking_galaxies.matching import match_to_sky_regions
-from drinking_galaxies.visualization import (
+from celebration_constellation.astronomy import StarCatalog
+from celebration_constellation.detection import detect_and_extract, draw_circles
+from celebration_constellation.matching import match_to_sky_regions
+from celebration_constellation.visualization import (
     create_composite_overlay,
     create_constellation_visualization,
     normalize_positions_to_canvas,
@@ -508,7 +508,7 @@ def main():
 
     initialize_session_state()
 
-    st.title("🌌 Drinking Galaxies")
+    st.title("🌌 Celebration Constellation")
     st.markdown(
         "Upload a photo of your table to discover which star constellation matches the pattern!"
     )

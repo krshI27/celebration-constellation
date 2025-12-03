@@ -122,7 +122,7 @@ class StarCatalog:
             cache_dir: Directory for caching catalog data
         """
         if cache_dir is None:
-            cache_dir = Path.home() / ".drinking_galaxies" / "star_cache"
+            cache_dir = Path.home() / ".celebration_constellation" / "star_cache"
 
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)

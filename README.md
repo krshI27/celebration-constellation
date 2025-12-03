@@ -13,6 +13,7 @@ Find your table's hidden constellation! Upload a photo of bottles, plates, and g
 Try the app now: **[celebration-constellation.streamlit.app](https://celebration-constellation.streamlit.app)**
 
 Deployment:
+
 - **Platform**: Streamlit Community Cloud (free tier)
 - **Source**: GitHub [@krshI27/celebration-constellation](https://github.com/krshI27/celebration-constellation)
 - **Mirror**: GitLab [@krshi27/celebration-constellation](https://gitlab.com/krshi27/celebration-constellation)

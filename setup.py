@@ -1,16 +1,16 @@
-"""Setup configuration for drinking-galaxies package."""
+"""Setup configuration for celebration-constellation package."""
 
 from setuptools import find_packages, setup
 
 setup(
-    name="drinking-galaxies",
+    name="celebration-constellation",
     version="0.1.0",
     author="Maximilian Sperlich",
     author_email="your.email@example.com",
     description="Star constellation matching from table photos",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/drinking-galaxies",
+    url="https://github.com/krshI27/celebration-constellation",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     python_requires=">=3.11",
