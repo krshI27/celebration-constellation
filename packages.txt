@@ -1,9 +1,5 @@
+libgl1-mesa-glx
+libglib2.0-0
 libsm6
 libxext6
 libxrender-dev
-libgomp1
-libjasper1
-libtiff5
-libwebp6
-libharfbuzz0b
-libopenjp2-7
