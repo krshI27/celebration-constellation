@@ -28,16 +28,16 @@ from PIL import Image
 
 from celebration_constellation.astronomy import StarCatalog
 from celebration_constellation.detection import detect_and_extract, draw_circles
+from celebration_constellation.lines import (
+    build_line_segments_for_region,
+    load_constellation_lines,
+)
 from celebration_constellation.matching import match_to_sky_regions
 from celebration_constellation.visualization import (
     create_composite_overlay,
     create_constellation_visualization,
+    draw_constellation_lines,
     normalize_positions_to_canvas,
-)
-from celebration_constellation.visualization import draw_constellation_lines
-from celebration_constellation.lines import (
-    load_constellation_lines,
-    build_line_segments_for_region,
 )
 
 
@@ -248,7 +248,13 @@ def find_constellation_matches(
             region["positions"] = positions
 
         # Match circle centers to sky regions
-        matches = match_to_sky_regions(centers, regions)
+        # Progress bar for matching
+        progress = st.progress(0.0)
+        def _progress_cb(done: int, total: int):
+            frac = max(0.0, min(1.0, done / max(total, 1)))
+            progress.progress(frac)
+
+        matches = match_to_sky_regions(centers, regions, progress_callback=_progress_cb)
 
     st.session_state.matches = matches
     st.session_state.current_match_index = 0
@@ -462,6 +468,8 @@ def render_composite_overlay(match: dict) -> np.ndarray:
         )
 
     return overlay
+
+
 def render_unified_view(
     match: dict,
     brightness: float = 1.0,
@@ -800,13 +808,19 @@ def main():
             "Show Circles", value=True, help="Overlay detected circle outlines"
         )
         color_by_bv = st.checkbox(
-            "Color Stars by B–V", value=True, help="Use real stellar colors when available; off uses theme color"
+            "Color Stars by B–V",
+            value=True,
+            help="Use real stellar colors when available; off uses theme color",
         )
         use_black_bg = st.checkbox(
-            "Use Black Background", value=False, help="Show a clean star field instead of your photo"
+            "Use Black Background",
+            value=False,
+            help="Show a clean star field instead of your photo",
         )
         show_constellation_lines = st.checkbox(
-            "Show Constellation Lines", value=False, help="Draw stick-figure lines for known constellations (when available)"
+            "Show Constellation Lines",
+            value=False,
+            help="Draw stick-figure lines for known constellations (when available)",
         )
 
         # Persist UI toggles for functions that read from session state
@@ -1085,7 +1099,11 @@ def main():
                 show_circles=bool(show_circles_toggle),
                 show_lines=bool(show_constellation_lines),
             )
-            st.image(unified, use_container_width=True, caption="Result overlay (configurable)")
+            st.image(
+                unified,
+                use_container_width=True,
+                caption="Result overlay (configurable)",
+            )
 
             st.divider()
 

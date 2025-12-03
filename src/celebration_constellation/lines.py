@@ -10,12 +10,11 @@ callers should handle the absence gracefully (e.g., disable lines toggle).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import json
 import pandas as pd
-
 
 DEFAULT_LINES_PATH = (
     Path(__file__).parent.parent.parent
@@ -25,7 +24,9 @@ DEFAULT_LINES_PATH = (
 )
 
 
-def load_constellation_lines(path: Path | None = None) -> Dict[str, List[Tuple[int, int]]]:
+def load_constellation_lines(
+    path: Path | None = None,
+) -> Dict[str, List[Tuple[int, int]]]:
     """Load constellation line definitions.
 
     The JSON file should map IAU 3-letter abbreviations (e.g., "ORI") to

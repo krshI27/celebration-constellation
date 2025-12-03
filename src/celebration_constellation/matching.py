@@ -310,6 +310,7 @@ def match_to_sky_regions(
     inlier_threshold: float = 0.05,
     identify_constellations: bool = True,
     max_points: int = 50,
+    progress_callback: Optional[callable] = None,
 ) -> list[dict]:
     """Match circle centers to multiple sky regions and rank by score.
 
@@ -375,7 +376,8 @@ def match_to_sky_regions(
     if identify_constellations:
         constellation_catalog = ConstellationCatalog()
 
-    for region in sky_regions:
+    total = len(sky_regions)
+    for idx, region in enumerate(sky_regions):
         star_positions = region.get("positions")
 
         if star_positions is None or len(star_positions) == 0:
@@ -427,6 +429,13 @@ def match_to_sky_regions(
             result["best_viewing_months"] = months
 
             results.append(result)
+
+        # Update progress if a callback is provided
+        if progress_callback is not None:
+            try:
+                progress_callback(idx + 1, total)
+            except Exception:
+                pass
 
     # Sort by score (descending)
     results.sort(key=lambda x: x["score"], reverse=True)
