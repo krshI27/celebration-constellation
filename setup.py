@@ -14,15 +14,15 @@ setup(
     package_dir={"": "src"},
     python_requires=">=3.11",
     install_requires=[
-        "numpy>=2.0",
-        "opencv-python-headless>=4.0",
+        "numpy>=2.0,<3",
+        "opencv-python-headless>=4.8",
         "scikit-image>=0.25",
-        "astropy>=7.0",
+        "astropy>=5.3",
         "astroquery>=0.4",
-        "scipy>=1.16",
-        "streamlit>=1.51",
+        "scipy>=1.11",
+        "streamlit>=1.31",
         "pandas>=2.0",
-        "pillow>=12.0",
+        "pillow>=10.0",
     ],
     extras_require={
         "dev": [
