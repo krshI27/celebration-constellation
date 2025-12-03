@@ -15,7 +15,7 @@ setup(
     python_requires=">=3.11",
     install_requires=[
         "numpy>=2.0",
-        "opencv-python>=4.0",
+        "opencv-python-headless>=4.0",
         "scikit-image>=0.25",
         "astropy>=7.0",
         "astroquery>=0.4",
