@@ -1,10 +1,23 @@
 # 🌌 Drinking Galaxies: Star Constellation Matcher
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://celebration-constellation.streamlit.app)
+
 Find your table's hidden constellation! Upload a photo of bottles, plates, and glasses to discover which star pattern they match in the night sky.
 
 ## Overview
 
 **Drinking Galaxies** detects circular objects (bottles, plates, glasses) in table photos and matches their spatial arrangement to star constellations visible from Earth using computer vision and RANSAC-based point cloud registration. The app identifies constellation names using IAU official boundaries and provides educational information about each match.
+
+## 🚀 Live Demo
+
+Try the app now: **[celebration-constellation.streamlit.app](https://celebration-constellation.streamlit.app)**
+
+Deployment:
+- **Platform**: Streamlit Community Cloud (free tier)
+- **Source**: GitHub [@krshI27/celebration-constellation](https://github.com/krshI27/celebration-constellation)
+- **Mirror**: GitLab [@krshi27/celebration-constellation](https://gitlab.com/krshi27/celebration-constellation)
+
+Note: App may sleep on inactivity; first load takes 10-20 seconds to wake.
 
 ## Features
 
