@@ -66,9 +66,7 @@ CLAUDE.local.md
 .specify/
 .claude/
 specs/
-.github/agents/
-.github/instructions/
-.github/prompts/
+.github/
 
 # OS
 .DS_Store
@@ -127,3 +125,9 @@ test_table_image.py
 
 # Internal reports (not for public)
 docs/.reports/
+
+# Development-only files (not needed for Streamlit Cloud)
+CHANGELOG.md
+test_table_image.py
+.flake8
+.gitlab-ci.yml
