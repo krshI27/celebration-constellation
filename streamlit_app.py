@@ -635,42 +635,51 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
 
+        # --- Circle Detection Settings ---
+        st.subheader("🔍 Circle Detection")
+
         detection_scale = st.selectbox(
-            "Detection Scale",
+            "Object Size",
             options=["Auto", "Close-up", "Wide"],
             index=0,
-            help="Auto-tunes circle sizes; choose Close-up for large objects or Wide for small/far objects",
-        )
-
-        search_depth = st.selectbox(
-            "Search Depth",
-            options=["Fast", "Balanced", "Thorough"],
-            index=1,
-            help="Fast=50 regions, Balanced=100, Thorough=200 (slower)",
+            help="Expected size of circular objects in your photo. Auto analyzes the image; Close-up for large glasses/plates; Wide for distant or small objects",
         )
 
         quality_threshold = st.slider(
-            "Detection Quality",
+            "Detection Sensitivity",
             min_value=0.05,
             max_value=0.35,
             value=0.10,
             step=0.01,
-            help="Lower = more detections (catches more, may have false positives). Higher = stricter (fewer false positives, may miss some)",
+            help="How strictly circles are detected. Lower = finds more circles (may include false positives). Higher = stricter matching (may miss some circles)",
         )
 
+        # --- Constellation Matching Settings ---
+        st.subheader("⭐ Constellation Matching")
+
+        search_depth = st.selectbox(
+            "Sky Search Depth",
+            options=["Fast", "Balanced", "Thorough"],
+            index=1,
+            help="How many sky regions to search for matching constellations. Fast=50 regions (~15s), Balanced=100 (~30s), Thorough=200 (~60s)",
+        )
+
+        # --- Visualization Settings ---
+        st.subheader("🎨 Visualization")
+
         star_brightness = st.slider(
-            "Star Brightness",
+            "Star Size",
             min_value=0.5,
             max_value=3.0,
             value=1.0,
             step=0.1,
-            help="Adjust the size of stars in the visualization (1.0 = normal)",
+            help="Size multiplier for stars in the Pattern and Circles views (1.0 = normal)",
         )
 
         num_regions = {"Fast": 50, "Balanced": 100, "Thorough": 200}[search_depth]
         if num_regions > 100:
             st.caption(
-                "⏱️ Estimated time: 30–90 seconds"
+                "⏱️ Thorough search: 30–90 seconds"
             )  # Minimal derived detection parameters (auto-tuned defaults)
     max_circles = 50
 
