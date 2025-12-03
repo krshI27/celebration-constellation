@@ -342,12 +342,14 @@ class StarCatalog:
         self,
         num_samples: int = 100,
         max_magnitude: float = 6.0,
+        radius_deg: float = 20.0,
     ) -> list[dict]:
         """Sample random sky regions for constellation matching.
 
         Args:
             num_samples: Number of sky regions to sample
             max_magnitude: Maximum star magnitude
+            radius_deg: Angular radius of each sky window in degrees
 
         Returns:
             List of dicts with 'ra', 'dec', and 'stars' for each region
@@ -358,7 +360,9 @@ class StarCatalog:
 
         regions = []
         for ra, dec in zip(ra_samples, dec_samples):
-            stars = self.get_stars_in_region(ra, dec, max_magnitude=max_magnitude)
+            stars = self.get_stars_in_region(
+                ra, dec, radius_deg=radius_deg, max_magnitude=max_magnitude
+            )
             if len(stars) > 0:
                 regions.append({"ra": ra, "dec": dec, "stars": stars})
 

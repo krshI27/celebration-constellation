@@ -34,6 +34,11 @@ from celebration_constellation.visualization import (
     create_constellation_visualization,
     normalize_positions_to_canvas,
 )
+from celebration_constellation.visualization import draw_constellation_lines
+from celebration_constellation.lines import (
+    load_constellation_lines,
+    build_line_segments_for_region,
+)
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -221,13 +226,19 @@ def process_uploaded_image(
     return image, circles, centers
 
 
-def find_constellation_matches(centers: np.ndarray, num_regions: int = 100):
+def find_constellation_matches(
+    centers: np.ndarray,
+    num_regions: int = 100,
+    radius_deg: float = 20.0,
+):
     """Find matching star constellations."""
     catalog = st.session_state.star_catalog
 
     with st.spinner("Searching the night sky for matching constellations..."):
         # Sample sky regions
-        regions = catalog.search_sky_regions(num_samples=num_regions)
+        regions = catalog.search_sky_regions(
+            num_samples=num_regions, radius_deg=radius_deg
+        )
 
         # Add stereographic projections
         for region in regions:
@@ -384,9 +395,10 @@ def render_composite_overlay(match: dict) -> np.ndarray:
     empty_centers = np.empty((0, 2), dtype=np.int32)
 
     # Create composite overlay: grayscale photo + theme-colored stars
-    # If B-V color index present, map to per-star RGB colors
+    # If B-V color index present, map to per-star RGB colors (respect global toggle if present)
     per_star_colors = None
-    if "stars" in match and "b_v" in match["stars"].columns:
+    use_bv_setting = st.session_state.get("color_by_bv", True)
+    if use_bv_setting and "stars" in match and "b_v" in match["stars"].columns:
         bvs = match["stars"]["b_v"].values[: len(star_positions)]
         per_star_colors = get_per_star_colors(bvs, theme_rgb)
 
@@ -450,6 +462,103 @@ def render_composite_overlay(match: dict) -> np.ndarray:
         )
 
     return overlay
+def render_unified_view(
+    match: dict,
+    brightness: float = 1.0,
+    color_by_bv: bool = True,
+    use_black_bg: bool = False,
+    show_circles: bool = True,
+    show_lines: bool = False,
+) -> np.ndarray:
+    """Render a unified view based on toggles.
+
+    - Background: photo (darkened) or black
+    - Stars: B-V color or theme color; magnitude-scaled sizes with brightness multiplier
+    - Circles: optional overlays
+    - Constellation lines: optional, if data available
+    """
+    image_shape = st.session_state.uploaded_image.shape
+    theme_rgb = get_theme_primary_rgb()
+
+    # Star positions in image coordinates
+    target_positions = match.get("target_positions")
+    if target_positions is None:
+        star_positions = np.empty((0, 2))
+    else:
+        star_positions = apply_inverse_transform(
+            target_positions, match["scale"], match["rotation"], match["translation"]
+        )
+
+    # Magnitudes
+    magnitudes = None
+    if "stars" in match and "magnitude" in match["stars"].columns:
+        magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
+
+    # Colors
+    per_star_colors = None
+    if color_by_bv and "stars" in match and "b_v" in match["stars"].columns:
+        bvs = match["stars"]["b_v"].values[: len(star_positions)]
+        per_star_colors = get_per_star_colors(bvs, theme_rgb)
+
+    # Base background
+    if use_black_bg:
+        base = np.zeros(image_shape, dtype=np.uint8)
+    else:
+        gray_base = apply_photometric_stretch(st.session_state.uploaded_image)
+        if len(gray_base.shape) == 2:
+            gray_base = cv2.cvtColor(gray_base, cv2.COLOR_GRAY2RGB)
+        elif gray_base.shape[2] == 1:
+            gray_base = cv2.cvtColor(gray_base[:, :, 0], cv2.COLOR_GRAY2RGB)
+        base = (gray_base * 0.35).astype(np.uint8)
+
+    canvas = base.copy()
+
+    # Draw stars
+    for idx, (x, y) in enumerate(star_positions):
+        x_int, y_int = int(x), int(y)
+        if not (0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]):
+            continue
+
+        mag = magnitudes[idx] if magnitudes is not None else 3.0
+        mag_clamped = max(0.0, min(6.0, mag))
+        base_radius = 35.0 * np.exp(-mag_clamped / 3.0)
+        radius = max(4, min(60, int(base_radius * float(brightness))))
+
+        if per_star_colors is not None:
+            color = tuple(int(c) for c in per_star_colors[idx])
+        else:
+            color = theme_rgb
+
+        cv2.circle(canvas, (x_int, y_int), radius, color, -1)
+
+    # Constellation lines (optional)
+    if show_lines and match.get("constellation") and len(star_positions):
+        # Load line map lazily and cache in session
+        if "_lines_map" not in st.session_state:
+            st.session_state._lines_map = load_constellation_lines()
+        lines_map = st.session_state._lines_map
+        segments = build_line_segments_for_region(
+            match.get("stars"), match.get("constellation"), lines_map
+        )
+        if segments:
+            # Draw on top using a contrasting color (theme)
+            canvas = draw_constellation_lines(
+                canvas, star_positions, segments, color=(100, 150, 255), thickness=2
+            )
+
+    # Circles (optional)
+    if show_circles:
+        circles = st.session_state.circles
+        if circles is not None and len(circles):
+            for x, y, r in circles:
+                x_int, y_int, r_int = int(x), int(y), int(r)
+                if 0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]:
+                    fill_layer = np.zeros_like(canvas)
+                    cv2.circle(fill_layer, (x_int, y_int), r_int, theme_rgb, -1)
+                    canvas = cv2.addWeighted(canvas, 1.0, fill_layer, 0.25, 0)
+                    cv2.circle(canvas, (x_int, y_int), r_int, theme_rgb, 3)
+
+    return canvas
 
 
 def render_circles_on_stars(match: dict, brightness: float = 1.0) -> np.ndarray:
@@ -657,11 +766,22 @@ def main():
         # --- Constellation Matching Settings ---
         st.subheader("⭐ Constellation Matching")
 
-        search_depth = st.selectbox(
-            "Sky Search Depth",
-            options=["Fast", "Balanced", "Thorough"],
-            index=1,
-            help="How many sky regions to search for matching constellations. Fast=50 regions (~15s), Balanced=100 (~30s), Thorough=200 (~60s)",
+        num_regions = st.slider(
+            "Sky Regions",
+            min_value=50,
+            max_value=500,
+            value=100,
+            step=10,
+            help="Number of random sky regions to search for matches. Higher = better coverage, slower. 100 ≈ 30–60s; 300 ≈ 2–3 min.",
+        )
+
+        radius_deg = st.slider(
+            "Sky Window (°)",
+            min_value=10,
+            max_value=40,
+            value=20,
+            step=1,
+            help="Angular radius of each sampled sky window. Smaller = fewer stars (faster); larger = more stars (slower, potentially better match).",
         )
 
         # --- Visualization Settings ---
@@ -673,14 +793,26 @@ def main():
             max_value=3.0,
             value=1.0,
             step=0.1,
-            help="Size multiplier for stars in the Pattern and Circles views (1.0 = normal)",
+            help="Size multiplier for stars in the Pattern/Circles views (1.0 = normal)",
         )
 
-        num_regions = {"Fast": 50, "Balanced": 100, "Thorough": 200}[search_depth]
-        if num_regions > 100:
-            st.caption(
-                "⏱️ Thorough search: 30–90 seconds"
-            )  # Minimal derived detection parameters (auto-tuned defaults)
+        show_circles_toggle = st.checkbox(
+            "Show Circles", value=True, help="Overlay detected circle outlines"
+        )
+        color_by_bv = st.checkbox(
+            "Color Stars by B–V", value=True, help="Use real stellar colors when available; off uses theme color"
+        )
+        use_black_bg = st.checkbox(
+            "Use Black Background", value=False, help="Show a clean star field instead of your photo"
+        )
+        show_constellation_lines = st.checkbox(
+            "Show Constellation Lines", value=False, help="Draw stick-figure lines for known constellations (when available)"
+        )
+
+        # Persist UI toggles for functions that read from session state
+        st.session_state["color_by_bv"] = color_by_bv
+        st.session_state["use_black_bg"] = use_black_bg
+        st.session_state["show_constellation_lines"] = show_constellation_lines
     max_circles = 50
 
     # Coarse min/max radii based on scale; Auto estimates from image
@@ -767,7 +899,7 @@ def main():
                 use_container_width=True,
             ):
                 matches = find_constellation_matches(
-                    st.session_state.centers, num_regions
+                    st.session_state.centers, num_regions, float(radius_deg)
                 )
 
                 if not matches:
@@ -941,6 +1073,19 @@ def main():
 
                         if len(match["stars"]) > 20:
                             st.caption(f"Showing 20 of {len(match['stars'])} stars")
+
+            st.divider()
+
+            # Unified result image with toggles
+            unified = render_unified_view(
+                match,
+                brightness=float(star_brightness),
+                color_by_bv=bool(color_by_bv),
+                use_black_bg=bool(use_black_bg),
+                show_circles=bool(show_circles_toggle),
+                show_lines=bool(show_constellation_lines),
+            )
+            st.image(unified, use_container_width=True, caption="Result overlay (configurable)")
 
             st.divider()
 
