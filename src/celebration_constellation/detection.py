@@ -335,6 +335,8 @@ def draw_circles(
     circle_color: tuple[int, int, int] = (0, 255, 0),
     center_color: tuple[int, int, int] = (255, 0, 0),
     thickness: int = 2,
+    fill_circles: bool = True,
+    fill_alpha: float = 0.15,
 ) -> np.ndarray:
     """Draw detected circles and centers on image.
 
@@ -345,6 +347,9 @@ def draw_circles(
         show_centers: Whether to draw center points
         circle_color: RGB color for circle outlines
         center_color: RGB color for center points
+        thickness: Thickness of circle outline
+        fill_circles: Whether to draw transparent fill inside circles
+        fill_alpha: Alpha (opacity) for circle fill, 0.0-1.0
 
     Returns:
         Image with circles and centers drawn
@@ -353,7 +358,16 @@ def draw_circles(
 
     for x, y, r in circles:
         if show_circles:
+            if fill_circles:
+                # Create a filled circle layer for blending
+                fill_layer = np.zeros_like(output)
+                cv2.circle(fill_layer, (x, y), r, circle_color, -1)
+                # Blend the filled circle with transparency
+                output = cv2.addWeighted(output, 1.0, fill_layer, fill_alpha, 0)
+
+            # Draw the outline on top
             cv2.circle(output, (x, y), r, circle_color, thickness)
+
         if show_centers:
             cv2.circle(output, (x, y), 3, center_color, -1)
 
