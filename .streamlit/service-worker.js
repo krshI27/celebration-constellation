@@ -1,7 +1,7 @@
-// Service Worker for Drinking Galaxies PWA
+// Service Worker for Celebration Constellation PWA
 // Simple cache-first strategy for static assets
 
-const CACHE_NAME = 'drinking-galaxies-v1';
+const CACHE_NAME = 'celebration-constellation-v1';
 const urlsToCache = [
     '/',
     '/manifest.json',

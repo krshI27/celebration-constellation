@@ -1,6 +1,6 @@
 {
-    "name": "Drinking Galaxies",
-    "short_name": "Galaxies",
+    "name": "Celebration Constellation",
+    "short_name": "Constellation",
     "description": "Find your table's hidden constellation! Match photos of bottles and glasses to star patterns in the night sky.",
     "start_url": "/",
     "display": "standalone",
