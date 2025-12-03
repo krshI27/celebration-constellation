@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import streamlit as st
+from PIL import Image
 
 from celebration_constellation.astronomy import StarCatalog
 from celebration_constellation.detection import detect_and_extract, draw_circles
@@ -72,6 +73,33 @@ def apply_photometric_stretch(image: np.ndarray) -> np.ndarray:
     except ImportError:
         # Fall back to simple grayscale if astropy not available
         return to_gray_rgb(image)
+
+
+def get_per_star_colors(b_v_values: np.ndarray, theme_rgb: tuple[int, int, int] = (0, 217, 255)) -> np.ndarray:
+    """Map B-V color index to RGB colors (blue/hot to red/cool).
+
+    Args:
+        b_v_values: Array of B-V color indices
+        theme_rgb: Default color for missing data
+
+    Returns:
+        Array of RGB colors corresponding to B-V values
+    """
+    colors = []
+    for bv in b_v_values:
+        if np.isnan(bv):
+            colors.append(theme_rgb)
+        elif bv <= 0.0:
+            colors.append((180, 200, 255))  # Blue (very hot stars)
+        elif bv <= 0.3:
+            colors.append((220, 230, 255))  # Light blue
+        elif bv <= 0.6:
+            colors.append((255, 255, 255))  # White
+        elif bv <= 1.0:
+            colors.append((255, 235, 180))  # Yellow
+        else:
+            colors.append((255, 210, 150))  # Orange/red (cool stars)
+    return np.array(colors, dtype=np.uint8)
 
 
 def estimate_radius_bounds(image: np.ndarray) -> tuple[int, int]:
@@ -276,38 +304,21 @@ def render_composite_overlay(match: dict) -> np.ndarray:
     per_star_colors = None
     if "stars" in match and "b_v" in match["stars"].columns:
         bvs = match["stars"]["b_v"].values[: len(star_positions)]
-        # Map B-V to RGB: blue (hot) to red (cool)
-        per_star_colors = []
-        for bv in bvs:
-            if np.isnan(bv):
-                per_star_colors.append(theme_rgb)
-            elif bv <= 0.0:
-                per_star_colors.append((180, 200, 255))
-            elif bv <= 0.3:
-                per_star_colors.append((220, 230, 255))
-            elif bv <= 0.6:
-                per_star_colors.append((255, 255, 255))
-            elif bv <= 1.0:
-                per_star_colors.append((255, 235, 180))
-            else:
-                per_star_colors.append((255, 210, 150))
-        per_star_colors = np.array(per_star_colors, dtype=np.uint8)
+        per_star_colors = get_per_star_colors(bvs, theme_rgb)
 
     # Build overlay with per-star colors if available
     if per_star_colors is not None:
+        from celebration_constellation.visualization import magnitude_to_radius
+
         overlay = gray_base.copy()
         star_layer = np.zeros_like(gray_base)
 
         # Render stars with individual colors and magnitude scaling
-        for idx, ((x, y), mag, color) in enumerate(
-            zip(
-                star_positions,
-                magnitudes if magnitudes is not None else [3.0] * len(star_positions),
-                per_star_colors,
-            )
+        for (x, y), mag, color in zip(
+            star_positions,
+            magnitudes if magnitudes is not None else [3.0] * len(star_positions),
+            per_star_colors,
         ):
-            from drinking_galaxies.visualization import magnitude_to_radius
-
             radius = magnitude_to_radius(mag, 24.0)
             x_int, y_int = int(x), int(y)
 
@@ -380,21 +391,7 @@ def render_circles_on_stars(match: dict) -> np.ndarray:
     per_star_colors = None
     if "stars" in match and "b_v" in match["stars"].columns:
         bvs = match["stars"]["b_v"].values[: len(star_positions)]
-        per_star_colors = []
-        for bv in bvs:
-            if np.isnan(bv):
-                per_star_colors.append((255, 255, 200))
-            elif bv <= 0.0:
-                per_star_colors.append((180, 200, 255))
-            elif bv <= 0.3:
-                per_star_colors.append((220, 230, 255))
-            elif bv <= 0.6:
-                per_star_colors.append((255, 255, 255))
-            elif bv <= 1.0:
-                per_star_colors.append((255, 235, 180))
-            else:
-                per_star_colors.append((255, 210, 150))
-        per_star_colors = np.array(per_star_colors, dtype=np.uint8)
+        per_star_colors = get_per_star_colors(bvs, (255, 255, 200))
 
     # Create star-only visualization first (use per-star colors if available)
     canvas = create_constellation_visualization(
@@ -423,7 +420,7 @@ def render_circles_on_stars(match: dict) -> np.ndarray:
 def main():
     """Main Streamlit application."""
     st.set_page_config(
-        page_title="Drinking Galaxies",
+        page_title="Celebration Constellation",
         page_icon="🌌",
         layout="wide",
         initial_sidebar_state="auto",
@@ -558,8 +555,6 @@ def main():
         if st.session_state.uploaded_image is None:
             with st.spinner("Detecting circular objects..."):
                 # Load image first for auto-tuning
-                from PIL import Image
-
                 pil_image = Image.open(uploaded_file)
                 temp_image = np.array(pil_image.convert("RGB"))
 
@@ -597,11 +592,8 @@ def main():
         st.session_state.show_centers = False
 
         if st.session_state.circles is not None:
-            # Apply enhanced rendering if enabled
-            if enhanced_render:
-                base = apply_photometric_stretch(st.session_state.uploaded_image)
-            else:
-                base = to_gray_rgb(st.session_state.uploaded_image)
+            # Apply photometric stretching for better contrast
+            base = apply_photometric_stretch(st.session_state.uploaded_image)
 
             if st.session_state.show_circles:
                 annotated_image = draw_circles(
@@ -665,6 +657,8 @@ def main():
 
             # Verification section - collapsed by default
             residual_summary = ""
+            mean_err = None
+            max_err = None
             if "target_positions" in match:
                 from scipy.spatial import distance_matrix
 
@@ -673,6 +667,7 @@ def main():
                 if len(transformed) and len(tp):
                     dists = distance_matrix(transformed, tp).min(axis=1)
                     mean_err = float(np.mean(dists))
+                    max_err = float(np.max(dists))
                     residual_summary = f"Mean residual: {mean_err:.3f}"
 
             with st.expander(
@@ -692,18 +687,10 @@ def main():
                             )
 
                 # Residual error details
-                if "target_positions" in match:
-                    tp = match["target_positions"]
-                    transformed = match["transformed_points"]
-                    if len(transformed) and len(tp):
-                        from scipy.spatial import distance_matrix
-
-                        dists = distance_matrix(transformed, tp).min(axis=1)
-                        mean_err = float(np.mean(dists))
-                        max_err = float(np.max(dists))
-                        st.caption(
-                            f"Residual error: mean {mean_err:.3f}, max {max_err:.3f} (lower = better fit)"
-                        )
+                if mean_err is not None and max_err is not None:
+                    st.caption(
+                        f"Residual error: mean {mean_err:.3f}, max {max_err:.3f} (lower = better fit)"
+                    )
 
                 # External verification links
                 ra_deg = match["ra"] % 360.0
