@@ -7,6 +7,8 @@ correction for star density to avoid bias toward dense regions.
 Includes smart point sampling to handle large datasets efficiently.
 """
 
+import json
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -373,6 +375,30 @@ def match_to_sky_regions(
 
     # Initialize constellation catalog if needed
     constellation_catalog = None
+    # Optional local constellation metadata cache
+    const_meta_path = (
+        Path(__file__).parent.parent.parent
+        / "data"
+        / "supplemental"
+        / "constellations_meta.json"
+    )
+    const_meta_index = None
+    if const_meta_path.exists():
+        try:
+            with open(const_meta_path, "r", encoding="utf-8") as f:
+                meta_list = json.load(f)
+            # Build abbrev → info index
+            const_meta_index = {
+                (item.get("abbrev") or "").upper(): {
+                    "full_name": item.get("full_name"),
+                    "abbrev": (item.get("abbrev") or "").upper(),
+                    "area_sq_deg": item.get("area_sq_deg"),
+                }
+                for item in meta_list
+                if isinstance(item, dict) and item.get("abbrev")
+            }
+        except Exception:
+            const_meta_index = None
     if identify_constellations:
         constellation_catalog = ConstellationCatalog()
 
@@ -404,9 +430,15 @@ def match_to_sky_regions(
                     region["ra"], region["dec"]
                 )
                 result["constellation"] = constellation_name
-                result["constellation_info"] = (
-                    constellation_catalog.get_constellation_info(constellation_name)
-                )
+                # Prefer local cached metadata when available
+                info = None
+                if const_meta_index and isinstance(constellation_name, str):
+                    info = const_meta_index.get(constellation_name.upper())
+                if info is None:
+                    info = constellation_catalog.get_constellation_info(
+                        constellation_name
+                    )
+                result["constellation_info"] = info
 
             # Add viewing location information
             visibility = calculate_visibility_range(region["ra"], region["dec"])

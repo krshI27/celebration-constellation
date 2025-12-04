@@ -22,12 +22,94 @@ class ConstellationCatalog:
             cache_dir: Directory for caching boundary data
         """
         if cache_dir is None:
-            cache_dir = Path.home() / ".celebration_constellation" / "constellation_cache"
+            cache_dir = (
+                Path.home() / ".celebration_constellation" / "constellation_cache"
+            )
 
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.boundary_file = self.cache_dir / "iau_boundaries.csv"
         self._boundaries = None
+        # Optional local metadata (names, areas) cache
+        self._metadata_index = None
+        self._meta_path = (
+            Path(__file__).parent.parent.parent
+            / "data"
+            / "supplemental"
+            / "constellations_meta.json"
+        )
+
+    def _load_local_metadata(self) -> Optional[dict]:
+        """Load local constellation metadata JSON if available.
+
+        Returns a dict keyed by IAU abbrev (uppercase) with fields
+        'full_name', 'abbrev', 'area_sq_deg'. Returns None if missing
+        or invalid.
+        """
+        if self._metadata_index is not None:
+            return self._metadata_index
+        try:
+            if self._meta_path.exists():
+                import json
+
+                with open(self._meta_path, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+                index = {
+                    (item.get("abbrev") or "").upper(): {
+                        "full_name": item.get("full_name"),
+                        "abbrev": (item.get("abbrev") or "").upper(),
+                        "area_sq_deg": item.get("area_sq_deg"),
+                    }
+                    for item in items
+                    if isinstance(item, dict) and item.get("abbrev")
+                }
+                self._metadata_index = index or None
+        except Exception:
+            self._metadata_index = None
+        return self._metadata_index
+
+    def _ensure_metadata(self) -> Optional[dict]:
+        """Ensure metadata is available; download and cache if missing.
+
+        Tries to read local JSON; if unavailable, fetches from VizieR (VI/49)
+        minimal fields (abbrev, full_name, area_sq_deg), writes JSON, and
+        returns the built index.
+        """
+        index = self._load_local_metadata()
+        if index is not None:
+            return index
+        # Attempt to fetch from VizieR and cache locally
+        try:
+            viz = Vizier(columns=["Name", "abbr", "Area"], row_limit=-1)
+            cats = viz.get_catalogs("VI/49")
+            if not cats:
+                return None
+            df = cats[0].to_pandas()
+            df = df.rename(
+                columns={"Name": "full_name", "abbr": "abbrev", "Area": "area_sq_deg"}
+            )
+            df["abbrev"] = df["abbrev"].astype(str).str.upper()
+            df["full_name"] = df["full_name"].astype(str)
+            # Area may be string; coerce to numeric
+            import pandas as pd
+
+            df["area_sq_deg"] = pd.to_numeric(df["area_sq_deg"], errors="coerce")
+            data = df[["abbrev", "full_name", "area_sq_deg"]].to_dict(orient="records")
+            # Write cache
+            try:
+                self._meta_path.parent.mkdir(parents=True, exist_ok=True)
+                import json
+
+                with open(self._meta_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            # Build index
+            index = {row["abbrev"]: row for row in data if row.get("abbrev")}
+            self._metadata_index = index or None
+            return self._metadata_index
+        except Exception:
+            return None
 
     def download_boundaries(
         self, force_refresh: bool = False
@@ -237,15 +319,15 @@ class ConstellationCatalog:
         if name is None:
             return None
 
-        # Constellation metadata dictionary
-        # Based on IAU official constellation data
-        metadata = CONSTELLATION_METADATA.get(name.upper())
+        # Prefer local cached metadata if available
+        local_index = self._ensure_metadata()
+        if local_index and name.upper() in local_index:
+            return local_index[name.upper()]
 
+        # Fall back to static metadata dictionary
+        metadata = CONSTELLATION_METADATA.get(name.upper())
         if metadata:
-            return {
-                "abbrev": name.upper(),
-                **metadata,
-            }
+            return {"abbrev": name.upper(), **metadata}
 
         return None
 
