@@ -1,0 +1,18 @@
+name: celebration-constellation
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=2.0,<3
+  - scipy>=1.11
+  - pandas>=2.0
+  - pillow>=10.0
+  - scikit-image>=0.25
+  - pip
+  - pip:
+      - opencv-python-headless>=4.8
+      - astropy>=5.3
+      - astroquery>=0.4
+      - streamlit>=1.31,<2
+      - streamlit-geolocation>=0.0.5

@@ -9,6 +9,7 @@ This app provides an interactive interface for:
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Add src directory to Python path for Streamlit Cloud deployment
@@ -21,10 +22,14 @@ if _src_path.exists() and str(_src_path) not in sys.path:
 # Prevents "libGL.so.1: cannot open shared object file" errors
 os.environ["LIBGL_ALWAYS_INDIRECT"] = "1"
 
+import astropy.units as u
 import cv2
 import numpy as np
 import streamlit as st
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord
+from astropy.time import Time
 from PIL import Image
+from streamlit_geolocation import geolocation
 
 from celebration_constellation.astronomy import StarCatalog
 from celebration_constellation.detection import detect_and_extract, draw_circles
@@ -119,6 +124,78 @@ def get_per_star_colors(
         else:
             colors.append((255, 210, 150))  # Orange/red (cool stars)
     return np.array(colors, dtype=np.uint8)
+
+
+# Palette for synthwave-inspired overlay
+NEON_PINK = (255, 80, 180)
+
+
+def create_synthwave_gradient(shape: tuple[int, int, int]) -> np.ndarray:
+    """Create a subtle synthwave-style gradient background.
+
+    Uses a vertical purple→blue blend with gentle sine modulation to avoid flat fills.
+    """
+    height, width, _ = shape
+    y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
+    x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
+
+    top = np.array([60, 30, 110], dtype=np.float32)  # muted violet
+    bottom = np.array([15, 45, 95], dtype=np.float32)  # deep blue
+
+    base = top * (1.0 - y) + bottom * y
+
+    # Gentle diagonal waves for depth; keep subtle to avoid noise
+    ripple = 6.0 * np.sin((x * 1.2 + y * 1.6) * np.pi)
+    gradient = base + ripple[:, :, None]
+
+    return np.clip(gradient, 0, 255).astype(np.uint8)
+
+
+def build_background(
+    image: np.ndarray, mode: str = "Original", darken_factor: float = 0.35
+) -> np.ndarray:
+    """Construct background based on selected mode."""
+
+    if mode == "Original":
+        return image.copy()
+
+    if mode == "Greyscale":
+        return to_gray_rgb(image)
+
+    if mode == "Dark Greyscale":
+        gray = to_gray_rgb(image)
+        return (gray.astype(np.float32) * darken_factor).astype(np.uint8)
+
+    if mode == "Black":
+        return np.zeros_like(image)
+
+    if mode == "Synthwave Gradient":
+        return create_synthwave_gradient(image.shape)
+
+    # Fallback
+    return image.copy()
+
+
+def resolve_star_color(
+    star_color_mode: str,
+    theme_rgb: tuple[int, int, int],
+    per_star_colors: np.ndarray | None,
+) -> tuple[np.ndarray | None, tuple[int, int, int]]:
+    """Return per-star palette and fallback color based on mode."""
+
+    mode = (star_color_mode or "").lower()
+
+    if mode.startswith("color by"):
+        return per_star_colors, theme_rgb
+
+    if mode.startswith("white"):
+        return None, (245, 245, 245)
+
+    if "neon" in mode:
+        return None, NEON_PINK
+
+    # Default to theme
+    return None, theme_rgb
 
 
 def estimate_radius_bounds(image: np.ndarray) -> tuple[int, int]:
@@ -474,8 +551,9 @@ def render_composite_overlay(match: dict) -> np.ndarray:
 def render_unified_view(
     match: dict,
     brightness: float = 1.0,
-    color_by_bv: bool = True,
-    use_black_bg: bool = False,
+    star_color_mode: str = "Color by B–V",
+    background_mode: str = "Original",
+    show_stars: bool = True,
     show_circles: bool = True,
     show_lines: bool = False,
 ) -> np.ndarray:
@@ -503,42 +581,50 @@ def render_unified_view(
     if "stars" in match and "magnitude" in match["stars"].columns:
         magnitudes = match["stars"]["magnitude"].values[: len(star_positions)]
 
-    # Colors
     per_star_colors = None
-    if color_by_bv and "stars" in match and "b_v" in match["stars"].columns:
+    if "stars" in match and "b_v" in match["stars"].columns:
         bvs = match["stars"]["b_v"].values[: len(star_positions)]
         per_star_colors = get_per_star_colors(bvs, theme_rgb)
 
     # Base background
-    if use_black_bg:
-        base = np.zeros(image_shape, dtype=np.uint8)
-    else:
-        gray_base = apply_photometric_stretch(st.session_state.uploaded_image)
-        if len(gray_base.shape) == 2:
-            gray_base = cv2.cvtColor(gray_base, cv2.COLOR_GRAY2RGB)
-        elif gray_base.shape[2] == 1:
-            gray_base = cv2.cvtColor(gray_base[:, :, 0], cv2.COLOR_GRAY2RGB)
-        base = (gray_base * 0.35).astype(np.uint8)
+    photo_base = apply_photometric_stretch(st.session_state.uploaded_image)
+    if len(photo_base.shape) == 2:
+        photo_base = cv2.cvtColor(photo_base, cv2.COLOR_GRAY2RGB)
+    elif photo_base.shape[2] == 1:
+        photo_base = cv2.cvtColor(photo_base[:, :, 0], cv2.COLOR_GRAY2RGB)
 
+    base = build_background(photo_base, mode=background_mode)
     canvas = base.copy()
 
+    # Star colors
+    if (
+        background_mode == "Synthwave Gradient"
+        and not star_color_mode.lower().startswith("color by")
+    ):
+        star_color_mode = "Neon pink"
+
+    per_star_colors, fallback_color = resolve_star_color(
+        star_color_mode, theme_rgb, per_star_colors
+    )
+
     # Draw stars
-    for idx, (x, y) in enumerate(star_positions):
-        x_int, y_int = int(x), int(y)
-        if not (0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]):
-            continue
+    if show_stars:
+        for idx, (x, y) in enumerate(star_positions):
+            x_int, y_int = int(x), int(y)
+            if not (0 <= x_int < canvas.shape[1] and 0 <= y_int < canvas.shape[0]):
+                continue
 
-        mag = magnitudes[idx] if magnitudes is not None else 3.0
-        mag_clamped = max(0.0, min(6.0, mag))
-        base_radius = 35.0 * np.exp(-mag_clamped / 3.0)
-        radius = max(4, min(60, int(base_radius * float(brightness))))
+            mag = magnitudes[idx] if magnitudes is not None else 3.0
+            mag_clamped = max(0.0, min(6.0, mag))
+            base_radius = 35.0 * np.exp(-mag_clamped / 3.0)
+            radius = max(4, min(60, int(base_radius * float(brightness))))
 
-        if per_star_colors is not None:
-            color = tuple(int(c) for c in per_star_colors[idx])
-        else:
-            color = theme_rgb
+            if per_star_colors is not None:
+                color = tuple(int(c) for c in per_star_colors[idx])
+            else:
+                color = fallback_color
 
-        cv2.circle(canvas, (x_int, y_int), radius, color, -1)
+            cv2.circle(canvas, (x_int, y_int), radius, color, -1)
 
     # Constellation lines (optional)
     if show_lines and match.get("constellation") and len(star_positions):
@@ -652,6 +738,172 @@ def render_circles_on_stars(match: dict, brightness: float = 1.0) -> np.ndarray:
                 canvas = cv2.addWeighted(canvas, 1.0, fill_layer, 0.35, 0)
                 # Draw outline on top
                 cv2.circle(canvas, (x_int, y_int), r_int, theme_rgb, 4)
+
+    return canvas
+
+
+def render_local_sky_map(
+    match: dict,
+    latitude: float,
+    longitude: float,
+    star_color_mode: str = "Color by B–V",
+) -> np.ndarray | None:
+    """Render a location-aware sky map highlighting the matched constellation region."""
+
+    if "stars" not in match:
+        return None
+
+    stars_df = match["stars"]
+    if not {"ra", "dec"}.issubset(stars_df.columns):
+        return None
+
+    ra_vals = stars_df["ra"].to_numpy(dtype=float)
+    dec_vals = stars_df["dec"].to_numpy(dtype=float)
+
+    try:
+        coords = SkyCoord(ra=ra_vals * u.deg, dec=dec_vals * u.deg, frame="icrs")
+        location = EarthLocation(lat=latitude * u.deg, lon=longitude * u.deg)
+        obstime = Time(datetime.utcnow())
+        altaz = coords.transform_to(AltAz(obstime=obstime, location=location))
+    except Exception:
+        return None
+
+    alt = altaz.alt.deg
+    az = altaz.az.deg
+
+    valid = np.isfinite(alt) & np.isfinite(az)
+    if not np.any(valid):
+        return None
+
+    # Prepare canvas
+    size = 620
+    center = (size // 2, size // 2)
+    horizon_r = center[0] - 20
+    canvas = np.full((size, size, 3), (6, 6, 14), dtype=np.uint8)
+
+    # Horizon circle
+    cv2.circle(canvas, center, horizon_r, (40, 40, 70), 2, cv2.LINE_AA)
+
+    # Cardinal labels
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(
+        canvas,
+        "N",
+        (center[0] - 10, center[1] - horizon_r - 8),
+        font,
+        0.8,
+        (120, 140, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "S",
+        (center[0] - 10, center[1] + horizon_r + 20),
+        font,
+        0.8,
+        (120, 140, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "E",
+        (center[0] + horizon_r + 12, center[1] + 6),
+        font,
+        0.8,
+        (120, 140, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "W",
+        (center[0] - horizon_r - 28, center[1] + 6),
+        font,
+        0.8,
+        (120, 140, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    # Only consider stars above/barely below horizon for plotting
+    mask = valid & (alt > -5)
+    if not np.any(mask):
+        mask = valid
+
+    alt = alt[mask]
+    az = az[mask]
+
+    magnitudes = None
+    if "magnitude" in stars_df.columns:
+        magnitudes = stars_df.loc[mask, "magnitude"].to_numpy(dtype=float)
+
+    theme_rgb = get_theme_primary_rgb()
+    per_star_colors = None
+    if "b_v" in stars_df.columns:
+        bvs = stars_df.loc[mask, "b_v"].to_numpy(dtype=float)
+        per_star_colors = get_per_star_colors(bvs, theme_rgb)
+
+    # Color resolution
+    per_star_colors, fallback_color = resolve_star_color(
+        star_color_mode, theme_rgb, per_star_colors
+    )
+
+    def to_xy(alt_deg: float, az_deg: float) -> tuple[int, int]:
+        r = (90.0 - np.clip(alt_deg, 0.0, 90.0)) / 90.0 * horizon_r
+        theta = np.deg2rad(az_deg - 90.0)
+        x = int(center[0] + r * np.cos(theta))
+        y = int(center[1] + r * np.sin(theta))
+        return x, y
+
+    # Draw stars
+    for idx, (a, z) in enumerate(zip(alt, az)):
+        x, y = to_xy(a, z)
+        if not (0 <= x < size and 0 <= y < size):
+            continue
+
+        mag = (
+            magnitudes[idx] if magnitudes is not None and idx < len(magnitudes) else 3.0
+        )
+        mag_clamped = max(0.0, min(6.0, mag))
+        radius = max(2, min(10, int(12.0 * np.exp(-mag_clamped / 3.0))))
+
+        if per_star_colors is not None:
+            color = tuple(int(c) for c in per_star_colors[idx])
+        else:
+            color = fallback_color
+
+        cv2.circle(canvas, (x, y), radius, color, -1)
+        cv2.circle(canvas, (x, y), radius + 3, tuple(int(c * 0.5) for c in color), 1)
+
+    # Highlight region bounding the matched constellation
+    if len(alt) >= 2:
+        min_alt, max_alt = float(np.min(alt)), float(np.max(alt))
+        min_az, max_az = float(np.min(az)), float(np.max(az))
+
+        corners = [
+            to_xy(min_alt, min_az),
+            to_xy(min_alt, max_az),
+            to_xy(max_alt, max_az),
+            to_xy(max_alt, min_az),
+        ]
+        cv2.polylines(
+            canvas,
+            [np.array(corners, dtype=np.int32)],
+            True,
+            (160, 200, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        # Mark approximate center
+        center_alt = (min_alt + max_alt) / 2.0
+        center_az = (min_az + max_az) / 2.0
+        cx, cy = to_xy(center_alt, center_az)
+        cv2.drawMarker(
+            canvas, (cx, cy), (255, 220, 120), cv2.MARKER_STAR, 18, 2, cv2.LINE_AA
+        )
 
     return canvas
 
@@ -802,21 +1054,33 @@ def main():
             max_value=3.0,
             value=1.0,
             step=0.1,
-            help="Size multiplier for stars in the Pattern/Circles views (1.0 = normal)",
+            help="Size multiplier for stars in the interactive view (1.0 = normal)",
+        )
+        background_mode = st.selectbox(
+            "Background",
+            [
+                "Original",
+                "Greyscale",
+                "Dark Greyscale",
+                "Black",
+                "Synthwave Gradient",
+            ],
+            index=0,
+            help="Choose the canvas under the overlays.",
         )
 
+        star_color_mode = st.selectbox(
+            "Star color",
+            ["Color by B–V", "Theme blue", "White", "Neon pink"],
+            index=0,
+            help="Use physical star colors, the app theme, neutral white, or neon pink (best with the gradient)",
+        )
+
+        show_stars_toggle = st.checkbox(
+            "Show Stars", value=True, help="Toggle rendering of matched stars"
+        )
         show_circles_toggle = st.checkbox(
             "Show Circles", value=True, help="Overlay detected circle outlines"
-        )
-        color_by_bv = st.checkbox(
-            "Color Stars by B–V",
-            value=True,
-            help="Use real stellar colors when available; off uses theme color",
-        )
-        use_black_bg = st.checkbox(
-            "Use Black Background",
-            value=False,
-            help="Show a clean star field instead of your photo",
         )
         show_constellation_lines = st.checkbox(
             "Show Constellation Lines",
@@ -825,9 +1089,11 @@ def main():
         )
 
         # Persist UI toggles for functions that read from session state
-        st.session_state["color_by_bv"] = color_by_bv
-        st.session_state["use_black_bg"] = use_black_bg
+        st.session_state["color_by_bv"] = star_color_mode.startswith("Color by")
         st.session_state["show_constellation_lines"] = show_constellation_lines
+        st.session_state["background_mode"] = background_mode
+        st.session_state["star_color_mode"] = star_color_mode
+        st.session_state["show_stars"] = show_stars_toggle
     max_circles = 50
 
     # Coarse min/max radii based on scale; Auto estimates from image
@@ -1061,6 +1327,78 @@ def main():
                         months_str = ", ".join(match["best_viewing_months"])
                         st.markdown(f"🗓️ **Best months:** {months_str}")
 
+                    st.markdown("### 🧭 Local sky map")
+                    st.caption(
+                        "Share your location to see where this constellation sits in your sky."
+                    )
+
+                    location_choice = st.radio(
+                        "Location source",
+                        ["Use browser (prompt)", "Enter manually"],
+                        horizontal=True,
+                        key=f"location_choice_{st.session_state.current_match_index}",
+                    )
+
+                    lat_val: float | None = None
+                    lon_val: float | None = None
+
+                    if location_choice.startswith("Use browser"):
+                        with st.spinner("Requesting browser location..."):
+                            loc = geolocation()
+                        if (
+                            loc
+                            and loc.get("lat") is not None
+                            and loc.get("lng") is not None
+                        ):
+                            lat_val = float(loc["lat"])
+                            lon_val = float(loc["lng"])
+                            st.success(
+                                f"Using browser location: {lat_val:.2f}°, {lon_val:.2f}°"
+                            )
+                        else:
+                            st.caption(
+                                "If the prompt was blocked, allow location access or switch to manual entry."
+                            )
+
+                    if lat_val is None or lon_val is None:
+                        col_lat, col_lon = st.columns(2)
+                        lat_val = col_lat.number_input(
+                            "Latitude (°)",
+                            min_value=-90.0,
+                            max_value=90.0,
+                            value=0.0,
+                            step=0.1,
+                            format="%.4f",
+                            key=f"manual_lat_{st.session_state.current_match_index}",
+                        )
+                        lon_val = col_lon.number_input(
+                            "Longitude (°)",
+                            min_value=-180.0,
+                            max_value=180.0,
+                            value=0.0,
+                            step=0.1,
+                            format="%.4f",
+                            key=f"manual_lon_{st.session_state.current_match_index}",
+                        )
+
+                    sky_map = render_local_sky_map(
+                        match,
+                        latitude=float(lat_val),
+                        longitude=float(lon_val),
+                        star_color_mode=str(
+                            st.session_state.get("star_color_mode", "Color by B–V")
+                        ),
+                    )
+
+                    if sky_map is not None:
+                        st.image(
+                            sky_map,
+                            use_container_width=True,
+                            caption=f"Sky view for {lat_val:.2f}°, {lon_val:.2f}° (now)",
+                        )
+                    else:
+                        st.info("Sky map unavailable for this match/location.")
+
             # Advanced star data
             with st.expander("🔬 Star Data"):
                 if "stars" in match:
@@ -1095,8 +1433,9 @@ def main():
             unified = render_unified_view(
                 match,
                 brightness=float(star_brightness),
-                color_by_bv=bool(color_by_bv),
-                use_black_bg=bool(use_black_bg),
+                star_color_mode=str(star_color_mode),
+                background_mode=str(background_mode),
+                show_stars=bool(show_stars_toggle),
                 show_circles=bool(show_circles_toggle),
                 show_lines=bool(show_constellation_lines),
             )
@@ -1105,26 +1444,6 @@ def main():
                 use_container_width=True,
                 caption="Result overlay (configurable)",
             )
-
-            st.divider()
-
-            # Render visualizations with tabs (reordered, default to Overlay)
-            tab1, tab2, tab3 = st.tabs(["📸 Overlay", "⭐ Pattern", "🎯 Circles"])
-
-            with tab1:
-                st.caption("Stars overlaid on your photo (colored by temperature)")
-                composite_image = render_composite_overlay(match)
-                st.image(composite_image, use_container_width=True)
-
-            with tab2:
-                st.caption("Matched star constellation pattern")
-                sky_image = render_sky_visualization(match, star_brightness)
-                st.image(sky_image, use_container_width=True)
-
-            with tab3:
-                st.caption("Detected circles on star pattern (colored by temperature)")
-                circles_on_stars_image = render_circles_on_stars(match, star_brightness)
-                st.image(circles_on_stars_image, use_container_width=True)
 
             # Bottom-centered navigation
             st.divider()
