@@ -250,6 +250,7 @@ def find_constellation_matches(
         # Match circle centers to sky regions
         # Progress bar for matching
         progress = st.progress(0.0)
+
         def _progress_cb(done: int, total: int):
             frac = max(0.0, min(1.0, done / max(total, 1)))
             progress.progress(frac)
