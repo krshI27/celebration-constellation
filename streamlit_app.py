@@ -29,7 +29,7 @@ import streamlit as st
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.time import Time
 from PIL import Image
-from streamlit_geolocation import geolocation
+from streamlit_geolocation import streamlit_geolocation as geolocation
 
 from celebration_constellation.astronomy import StarCatalog
 from celebration_constellation.detection import detect_and_extract, draw_circles
@@ -172,6 +172,18 @@ def build_background(
     if mode == "Synthwave Gradient":
         return create_synthwave_gradient(image.shape)
 
+    if mode == "Synthwave Colorized":
+        synth_base = create_synthwave_gradient(image.shape)
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        gray_norm = cv2.normalize(
+            gray.astype(np.float32), None, 0.0, 1.0, cv2.NORM_MINMAX
+        )
+        return (
+            (synth_base.astype(np.float32) * gray_norm[:, :, None])
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
+
     # Fallback
     return image.copy()
 
@@ -252,6 +264,12 @@ def initialize_session_state():
     if "uploaded_image" not in st.session_state:
         st.session_state.uploaded_image = None
 
+    if "uploaded_path" not in st.session_state:
+        st.session_state.uploaded_path = None
+
+    if "last_uploaded_name" not in st.session_state:
+        st.session_state.last_uploaded_name = None
+
     if "circles" not in st.session_state:
         st.session_state.circles = None
 
@@ -264,14 +282,70 @@ def initialize_session_state():
     if "current_match_index" not in st.session_state:
         st.session_state.current_match_index = 0
 
+    if "bg_ready_dark" not in st.session_state:
+        st.session_state.bg_ready_dark = False
+
+    if "bg_ready_synth" not in st.session_state:
+        st.session_state.bg_ready_synth = False
+
+    if "circles_ready" not in st.session_state:
+        st.session_state.circles_ready = False
+
+    if "matches_ready" not in st.session_state:
+        st.session_state.matches_ready = False
+
+    if "active_backgrounds" not in st.session_state:
+        st.session_state.active_backgrounds = ["Black"]
+
+    if "background_cache" not in st.session_state:
+        st.session_state.background_cache = {}
+
     if "show_circles" not in st.session_state:
         st.session_state.show_circles = True
 
     if "show_centers" not in st.session_state:
         st.session_state.show_centers = True
 
+    if "background_mode" not in st.session_state:
+        st.session_state.background_mode = "Black"
+
+    if "star_color_mode" not in st.session_state:
+        st.session_state.star_color_mode = "Color by B–V"
+
+    if "show_stars" not in st.session_state:
+        st.session_state.show_stars = True
+
+    if "show_constellation_lines" not in st.session_state:
+        st.session_state.show_constellation_lines = False
+
+    if "pending_params" not in st.session_state:
+        st.session_state.pending_params = None
+
     if "star_catalog" not in st.session_state:
         st.session_state.star_catalog = StarCatalog()
+
+
+def reset_pipeline_state(clear_image: bool = False):
+    """Reset staged outputs and readiness flags.
+
+    Args:
+        clear_image: When True, also drop the uploaded image reference.
+    """
+
+    if clear_image:
+        st.session_state.uploaded_image = None
+        st.session_state.uploaded_path = None
+
+    st.session_state.background_cache = {}
+    st.session_state.active_backgrounds = ["Black"]
+    st.session_state.bg_ready_dark = False
+    st.session_state.bg_ready_synth = False
+    st.session_state.circles_ready = False
+    st.session_state.matches_ready = False
+    st.session_state.circles = None
+    st.session_state.centers = None
+    st.session_state.matches = []
+    st.session_state.current_match_index = 0
 
 
 def process_uploaded_image(
@@ -301,6 +375,124 @@ def process_uploaded_image(
     st.session_state.centers = centers
 
     return image, circles, centers
+
+
+def _compute_staged_backgrounds(image: np.ndarray):
+    """Compute baseline and derived backgrounds for staged availability."""
+
+    st.session_state.background_cache = {}
+    st.session_state.active_backgrounds = ["Black"]
+
+    # Baseline black background
+    st.session_state.background_cache["Black"] = np.zeros_like(image)
+
+    # Baseline synthwave gradient (immediately available)
+    synth_base = create_synthwave_gradient(image.shape)
+    st.session_state.background_cache["Synthwave Gradient"] = synth_base
+    st.session_state.active_backgrounds.append("Synthwave Gradient")
+
+    # Derived dark greyscale
+    dark_gray = build_background(image, mode="Dark Greyscale")
+    st.session_state.background_cache["Dark Greyscale"] = dark_gray
+    st.session_state.bg_ready_dark = True
+    st.session_state.active_backgrounds.append("Dark Greyscale")
+
+    # Synthwave colorized greyscale (image-weighted gradient)
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gray_norm = cv2.normalize(gray.astype(np.float32), None, 0.0, 1.0, cv2.NORM_MINMAX)
+    synth_colorized = (
+        (synth_base.astype(np.float32) * gray_norm[:, :, None])
+        .clip(0, 255)
+        .astype(np.uint8)
+    )
+    st.session_state.background_cache["Synthwave Colorized"] = synth_colorized
+    st.session_state.bg_ready_synth = True
+    st.session_state.active_backgrounds.append("Synthwave Colorized")
+
+    # Original (optional) once available
+    st.session_state.background_cache["Original"] = image
+    st.session_state.active_backgrounds.append("Original")
+
+
+def run_pipeline(
+    uploaded_file,
+    *,
+    detection_scale: str,
+    quality_threshold: float,
+    num_regions: int,
+    radius_deg: float,
+    star_brightness: float,
+    max_circles: int = 50,
+):
+    """Run staged processing pipeline and update session state."""
+
+    # If new upload provided, store and reset pipeline outputs
+    if uploaded_file is not None:
+        reset_pipeline_state(clear_image=False)
+        temp_path = Path("/tmp/uploaded_image.jpg")
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        st.session_state.uploaded_path = temp_path
+        st.session_state.last_uploaded_name = getattr(uploaded_file, "name", None)
+
+        # Read image into memory for backgrounds
+        uploaded_file.seek(0)
+        pil_image = Image.open(uploaded_file)
+        image = np.array(pil_image.convert("RGB"))
+        st.session_state.uploaded_image = image
+        _compute_staged_backgrounds(image)
+    else:
+        image = st.session_state.uploaded_image
+
+    if image is None or st.session_state.uploaded_path is None:
+        return
+
+    # Estimate radii if auto
+    if detection_scale == "Auto":
+        min_radius, max_radius = estimate_radius_bounds(image)
+    elif detection_scale == "Close-up":
+        min_radius, max_radius = 40, 150
+    elif detection_scale == "Wide":
+        min_radius, max_radius = 15, 250
+    else:
+        min_radius, max_radius = 20, 200
+
+    # Circle detection
+    with st.spinner("Detecting circular objects..."):
+        image, circles, centers = detect_and_extract(
+            Path(st.session_state.uploaded_path),
+            min_radius=min_radius,
+            max_radius=max_radius,
+            max_circles=max_circles,
+            quality_threshold=quality_threshold,
+        )
+    st.session_state.uploaded_image = image
+    st.session_state.circles = circles
+    st.session_state.centers = centers
+    st.session_state.circles_ready = circles is not None and len(circles) > 0
+
+    # Constellation matching (only if circles/centers found)
+    if centers is not None and len(centers):
+        matches = find_constellation_matches(centers, num_regions, float(radius_deg))
+        st.session_state.matches = matches or []
+        st.session_state.matches_ready = bool(matches)
+        st.session_state.current_match_index = 0
+    else:
+        st.session_state.matches = []
+        st.session_state.matches_ready = False
+
+    # Persist rendering params
+    st.session_state.star_brightness = star_brightness
+    st.session_state.pending_params = {
+        "detection_scale": detection_scale,
+        "quality_threshold": quality_threshold,
+        "num_regions": num_regions,
+        "radius_deg": radius_deg,
+        "star_brightness": star_brightness,
+        "min_radius": min_radius,
+        "max_radius": max_radius,
+    }
 
 
 def find_constellation_matches(
@@ -888,6 +1080,9 @@ def render_local_sky_map(
             to_xy(max_alt, max_az),
             to_xy(max_alt, min_az),
         ]
+        overlay = np.zeros_like(canvas)
+        cv2.fillPoly(overlay, [np.array(corners, dtype=np.int32)], (80, 120, 200))
+        canvas = cv2.addWeighted(canvas, 1.0, overlay, 0.15, 0)
         cv2.polylines(
             canvas,
             [np.array(corners, dtype=np.int32)],
@@ -904,6 +1099,16 @@ def render_local_sky_map(
         cv2.drawMarker(
             canvas, (cx, cy), (255, 220, 120), cv2.MARKER_STAR, 18, 2, cv2.LINE_AA
         )
+        cv2.putText(
+            canvas,
+            "Image footprint",
+            (cx - 70, cy - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (180, 210, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
     return canvas
 
@@ -912,526 +1117,231 @@ def main():
     """Main Streamlit application."""
     st.set_page_config(
         page_title="Celebration Constellation",
-        page_icon="🌌",
+        page_icon="★",
         layout="wide",
         initial_sidebar_state="auto",
     )
 
-    # Add PWA meta tags and custom CSS for mobile-first design
+    # Load Font Awesome and compact styling
     st.markdown(
         """
-        <!-- PWA Meta Tags -->
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-        <meta name="theme-color" content="#00D9FF">
-        <meta name="apple-mobile-web-app-capable" content="yes">
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-        <meta name="apple-mobile-web-app-title" content="Galaxies">
-        <link rel="manifest" href="/.streamlit/manifest.json">
-        
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
         <style>
-        /* Button styling for larger tap targets */
         .stButton > button {
-            min-height: 48px;
+            min-height: 44px;
             font-weight: 600;
-            border-radius: 8px;
+            border-radius: 10px;
+            font-family: "Font Awesome 6 Free", "Segoe UI", system-ui, -apple-system, sans-serif;
         }
-        
-        /* Primary CTA button emphasis */
         .stButton > button[kind="primary"] {
-            min-height: 56px;
-            font-size: 1.1rem;
+            min-height: 52px;
         }
-        
-        /* Bottom navigation bar styling */
-        .nav-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 1rem;
-            padding: 1rem 0;
-            margin-top: 1rem;
+        .status-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            background: #0f1116;
+            border: 1px solid #223;
         }
-        
-        /* Lighter dividers */
-        hr {
-            margin: 1.5rem 0;
-            opacity: 0.3;
-        }
-        
-        /* Compact metric styling */
-        [data-testid="stMetricValue"] {
-            font-size: 1.2rem;
-        }
-        
-        /* Image container constraints for mobile */
-        @media (max-width: 768px) {
-            .stImage {
-                max-height: 60vh;
-            }
-        }
-        
-        /* Tab label simplification */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 0.5rem;
-        }
+        .status-pill.ready { color: #6fffe9; border-color: #3de0c6; }
+        .status-pill.wait { color: #9ba3b4; }
         </style>
-        
-        <script>
-        // Register service worker for PWA functionality
-        if ('serviceWorker' in navigator) {
-          window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/.streamlit/service-worker.js')
-              .then((registration) => {
-                console.log('ServiceWorker registered:', registration);
-              })
-              .catch((error) => {
-                console.log('ServiceWorker registration failed:', error);
-              });
-          });
-        }
-        </script>
         """,
         unsafe_allow_html=True,
     )
 
     initialize_session_state()
 
-    st.title("🌌 Celebration Constellation")
-    st.markdown(
-        "Upload a photo of your table to discover which star constellation matches the pattern!"
+    st.title("Celebration Constellation")
+    st.caption(
+        "Upload an image to auto-run detection and matching. Adjust settings in the sidebar, then hit Run to reprocess."
     )
 
-    # Simplified sidebar - essential controls only
+    # Sidebar processing form
     with st.sidebar:
-        st.header("⚙️ Settings")
+        st.header("Processing")
+        with st.form("processing_form"):
+            detection_scale = st.selectbox(
+                "Object Size",
+                options=["Auto", "Close-up", "Wide"],
+                index=0,
+                help="Expected size of circular objects in your photo. Auto analyzes the image; Close-up for large glasses/plates; Wide for distant or small objects",
+            )
 
-        # --- Circle Detection Settings ---
-        st.subheader("🔍 Circle Detection")
+            quality_threshold = st.slider(
+                "Detection Sensitivity",
+                min_value=0.05,
+                max_value=0.35,
+                value=0.10,
+                step=0.01,
+                help="Lower finds more circles; higher is stricter.",
+            )
 
-        detection_scale = st.selectbox(
-            "Object Size",
-            options=["Auto", "Close-up", "Wide"],
-            index=0,
-            help="Expected size of circular objects in your photo. Auto analyzes the image; Close-up for large glasses/plates; Wide for distant or small objects",
+            num_regions = st.slider(
+                "Sky Regions",
+                min_value=50,
+                max_value=500,
+                value=100,
+                step=10,
+                help="Higher = better coverage, slower.",
+            )
+
+            radius_deg = st.slider(
+                "Sky Window (°)",
+                min_value=10,
+                max_value=40,
+                value=20,
+                step=1,
+                help="Angular radius per sampled sky window.",
+            )
+
+            star_brightness = st.slider(
+                "Star Size",
+                min_value=0.5,
+                max_value=3.0,
+                value=1.0,
+                step=0.1,
+                help="Size multiplier for stars in overlays.",
+            )
+
+            run_clicked = st.form_submit_button(
+                "Run", type="primary", use_container_width=True
+            )
+
+        st.caption("Changes apply when Run is clicked. Auto-runs once on upload.")
+
+    uploaded_file = st.file_uploader(
+        "Upload a photo",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=False,
+        key="uploader",
+    )
+
+    # Trigger pipeline: auto on first upload, manual on Run
+    new_file_selected = uploaded_file is not None and (
+        st.session_state.last_uploaded_name != getattr(uploaded_file, "name", None)
+    )
+    should_auto_run = new_file_selected
+    if run_clicked and (uploaded_file is not None or st.session_state.uploaded_path):
+        run_pipeline(
+            uploaded_file if uploaded_file is not None else None,
+            detection_scale=detection_scale,
+            quality_threshold=quality_threshold,
+            num_regions=num_regions,
+            radius_deg=float(radius_deg),
+            star_brightness=float(star_brightness),
+        )
+    elif should_auto_run:
+        run_pipeline(
+            uploaded_file,
+            detection_scale=detection_scale,
+            quality_threshold=quality_threshold,
+            num_regions=num_regions,
+            radius_deg=float(radius_deg),
+            star_brightness=float(star_brightness),
         )
 
-        quality_threshold = st.slider(
-            "Detection Sensitivity",
-            min_value=0.05,
-            max_value=0.35,
-            value=0.10,
-            step=0.01,
-            help="How strictly circles are detected. Lower = finds more circles (may include false positives). Higher = stricter matching (may miss some circles)",
+    # Status row
+    if st.session_state.uploaded_image is not None:
+        status_cols = st.columns(4)
+        status_cols[0].markdown(
+            f"<span class='status-pill {'ready' if st.session_state.bg_ready_dark or st.session_state.bg_ready_synth else 'wait'}'>BG</span>",
+            unsafe_allow_html=True,
+        )
+        status_cols[1].markdown(
+            f"<span class='status-pill {'ready' if st.session_state.circles_ready else 'wait'}'>Circles</span>",
+            unsafe_allow_html=True,
+        )
+        status_cols[2].markdown(
+            f"<span class='status-pill {'ready' if st.session_state.matches_ready else 'wait'}'>Matches</span>",
+            unsafe_allow_html=True,
+        )
+        status_cols[3].markdown(
+            f"<span class='status-pill ready'>Black bg</span>",
+            unsafe_allow_html=True,
         )
 
-        # --- Constellation Matching Settings ---
-        st.subheader("⭐ Constellation Matching")
+    # Viewer and layer controls
+    if st.session_state.uploaded_image is not None:
+        st.subheader("Viewer")
 
-        num_regions = st.slider(
-            "Sky Regions",
-            min_value=50,
-            max_value=500,
-            value=100,
-            step=10,
-            help="Number of random sky regions to search for matches. Higher = better coverage, slower. 100 ≈ 30–60s; 300 ≈ 2–3 min.",
-        )
-
-        radius_deg = st.slider(
-            "Sky Window (°)",
-            min_value=10,
-            max_value=40,
-            value=20,
-            step=1,
-            help="Angular radius of each sampled sky window. Smaller = fewer stars (faster); larger = more stars (slower, potentially better match).",
-        )
-
-        # --- Visualization Settings ---
-        st.subheader("🎨 Visualization")
-
-        star_brightness = st.slider(
-            "Star Size",
-            min_value=0.5,
-            max_value=3.0,
-            value=1.0,
-            step=0.1,
-            help="Size multiplier for stars in the interactive view (1.0 = normal)",
-        )
-        background_mode = st.selectbox(
+        # Layer controls in main area
+        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([2, 1, 1, 1])
+        available_backgrounds = st.session_state.active_backgrounds or ["Black"]
+        background_mode = ctrl1.selectbox(
             "Background",
-            [
-                "Original",
-                "Greyscale",
-                "Dark Greyscale",
-                "Black",
-                "Synthwave Gradient",
-            ],
-            index=0,
-            help="Choose the canvas under the overlays.",
+            options=available_backgrounds,
+            index=(
+                available_backgrounds.index(st.session_state.background_mode)
+                if st.session_state.background_mode in available_backgrounds
+                else 0
+            ),
         )
+        st.session_state.background_mode = background_mode
 
-        star_color_mode = st.selectbox(
+        show_circles_toggle = ctrl2.checkbox(
+            "Circles",
+            value=st.session_state.show_circles,
+            disabled=not st.session_state.circles_ready,
+        )
+        st.session_state.show_circles = show_circles_toggle
+
+        show_stars_toggle = ctrl3.checkbox(
+            "Stars",
+            value=st.session_state.show_stars,
+            disabled=not st.session_state.matches_ready,
+        )
+        st.session_state.show_stars = show_stars_toggle
+
+        show_constellation_lines = ctrl4.checkbox(
+            "Lines",
+            value=st.session_state.show_constellation_lines,
+            disabled=not st.session_state.matches_ready,
+        )
+        st.session_state.show_constellation_lines = show_constellation_lines
+
+        ctrl5, ctrl6 = st.columns([1, 1])
+        star_color_mode = ctrl5.selectbox(
             "Star color",
             ["Color by B–V", "Theme blue", "White", "Neon pink"],
-            index=0,
-            help="Use physical star colors, the app theme, neutral white, or neon pink (best with the gradient)",
+            index=["Color by B–V", "Theme blue", "White", "Neon pink"].index(
+                st.session_state.star_color_mode
+                if st.session_state.star_color_mode
+                in [
+                    "Color by B–V",
+                    "Theme blue",
+                    "White",
+                    "Neon pink",
+                ]
+                else "Color by B–V"
+            ),
+            disabled=not st.session_state.matches_ready,
         )
+        st.session_state.star_color_mode = star_color_mode
 
-        show_stars_toggle = st.checkbox(
-            "Show Stars", value=True, help="Toggle rendering of matched stars"
+        star_brightness = ctrl6.slider(
+            "Star size",
+            min_value=0.5,
+            max_value=3.0,
+            value=float(st.session_state.get("star_brightness", 1.0)),
+            step=0.1,
+            disabled=not st.session_state.matches_ready,
         )
-        show_circles_toggle = st.checkbox(
-            "Show Circles", value=True, help="Overlay detected circle outlines"
-        )
-        show_constellation_lines = st.checkbox(
-            "Show Constellation Lines",
-            value=False,
-            help="Draw stick-figure lines for known constellations (when available)",
-        )
+        st.session_state.star_brightness = star_brightness
 
-        # Persist UI toggles for functions that read from session state
-        st.session_state["color_by_bv"] = star_color_mode.startswith("Color by")
-        st.session_state["show_constellation_lines"] = show_constellation_lines
-        st.session_state["background_mode"] = background_mode
-        st.session_state["star_color_mode"] = star_color_mode
-        st.session_state["show_stars"] = show_stars_toggle
-    max_circles = 50
+        # Pick current match if ready
+        active_match = None
+        if st.session_state.matches_ready and st.session_state.matches:
+            active_match = st.session_state.matches[
+                st.session_state.current_match_index
+            ]
 
-    # Coarse min/max radii based on scale; Auto estimates from image
-    if detection_scale == "Close-up":
-        min_radius, max_radius = 40, 150
-    elif detection_scale == "Wide":
-        min_radius, max_radius = 15, 250
-    else:
-        min_radius, max_radius = 20, 200
-
-    # File upload
-    uploaded_file = st.file_uploader(
-        "Upload a photo of your table",
-        type=["jpg", "jpeg", "png"],
-    )
-
-    if uploaded_file is not None:
-        # Process image
-        if st.session_state.uploaded_image is None:
-            with st.spinner("Detecting circular objects..."):
-                # Load image first for auto-tuning
-                pil_image = Image.open(uploaded_file)
-                temp_image = np.array(pil_image.convert("RGB"))
-
-                # Auto-tune radii if needed
-                if detection_scale == "Auto":
-                    with st.spinner("Auto-tuning detection parameters..."):
-                        min_radius, max_radius = estimate_radius_bounds(temp_image)
-                        st.caption(
-                            f"🔍 Auto-detected range: {min_radius}–{max_radius}px"
-                        )
-
-                uploaded_file.seek(0)  # Reset file pointer
-                image, circles, centers = process_uploaded_image(
-                    uploaded_file,
-                    min_radius,
-                    max_radius,
-                    max_circles,
-                    quality_threshold,
-                )
-
-            if circles is None:
-                st.error(
-                    "❌ No circular objects detected. Try adjusting radius settings in the sidebar."
-                )
-                return
-
-            st.success(f"✅ Detected {len(circles)} circles")
-
-        # Show uploaded image with detection overlay
-        st.subheader("📸 Your Table")
-
-        # Visualization toggle (centers hidden by design)
-        show_circles = st.checkbox("Show Circles", value=True)
-        st.session_state.show_circles = show_circles
-        st.session_state.show_centers = False
-
-        if st.session_state.circles is not None:
-            # Apply photometric stretching for better contrast
-            base = apply_photometric_stretch(st.session_state.uploaded_image)
-
-            if st.session_state.show_circles:
-                annotated_image = draw_circles(
-                    base,
-                    st.session_state.circles,
-                    show_circles=True,
-                    show_centers=False,
-                    circle_color=get_theme_primary_rgb(),
-                    thickness=4,
-                    fill_alpha=0.35,
-                )
-            else:
-                annotated_image = base
-            st.image(annotated_image, use_container_width=True)
-
-        st.divider()
-
-        # Primary CTA for matching (prominent placement)
-        if st.session_state.centers is not None and not st.session_state.matches:
-            st.markdown("### 🔍 Ready to find your constellation?")
-            if st.button(
-                "Find Matching Constellations",
-                type="primary",
-                use_container_width=True,
-            ):
-                matches = find_constellation_matches(
-                    st.session_state.centers, num_regions, float(radius_deg)
-                )
-
-                if not matches:
-                    st.warning(
-                        "No matches found. Try increasing Sky Regions in the sidebar."
-                    )
-                else:
-                    st.success(f"✨ Found {len(matches)} matches!")
-
-        # Display matches
-        if st.session_state.matches:
-            match = st.session_state.matches[st.session_state.current_match_index]
-
-            # Constellation name
-            if match.get("constellation_info"):
-                info = match["constellation_info"]
-                st.markdown(f"## ⭐ {info['full_name']} ({info['abbrev']})")
-                st.caption(f"📐 {info['area_sq_deg']} sq. degrees")
-                st.info(info["description"])
-            elif match.get("constellation"):
-                st.markdown(f"## ⭐ {match['constellation']}")
-
-            st.divider()
-
-            # Compact metrics in one row
-            met_col1, met_col2, met_col3 = st.columns(3)
-            with met_col1:
-                st.metric("Score", f"{match['score']:.2f}")
-            with met_col2:
-                st.metric("Stars", match["num_inliers"])
-            with met_col3:
-                st.metric("Position", f"{match['ra']:.0f}°, {match['dec']:.0f}°")
-
-            st.divider()
-
-            # Verification section - collapsed by default
-            residual_summary = ""
-            mean_err = None
-            max_err = None
-            if "target_positions" in match:
-                from scipy.spatial import distance_matrix
-
-                tp = match["target_positions"]
-                transformed = match["transformed_points"]
-                if len(transformed) and len(tp):
-                    dists = distance_matrix(transformed, tp).min(axis=1)
-                    mean_err = float(np.mean(dists))
-                    max_err = float(np.max(dists))
-                    residual_summary = f"Mean residual: {mean_err:.3f}"
-
-            with st.expander(
-                f"✅ Verification {f'({residual_summary})' if residual_summary else ''}"
-            ):
-                # Basic star catalog info
-                if "stars" in match:
-                    num_stars = len(match["stars"])
-                    st.caption(
-                        f"**{num_stars} catalog stars** from Yale Bright Star Catalog"
-                    )
-                    if "magnitude" in match["stars"].columns:
-                        mags = match["stars"]["magnitude"].dropna()
-                        if len(mags):
-                            st.caption(
-                                f"Magnitude: {mags.min():.1f} – {mags.max():.1f}"
-                            )
-
-                # Residual error details
-                if mean_err is not None and max_err is not None:
-                    st.caption(
-                        f"Residual error: mean {mean_err:.3f}, max {max_err:.3f} (lower = better fit)"
-                    )
-
-                # External verification links
-                ra_deg = match["ra"] % 360.0
-                dec_deg = match["dec"]
-                in_the_sky_url = (
-                    "https://in-the-sky.org/skymap.php?"
-                    f"ra={ra_deg:.3f}&dec={dec_deg:.3f}&zoom=2"
-                )
-                wikisky_url = (
-                    "https://server1.wikisky.org/v2?"
-                    f"ra={ra_deg:.3f}&de={dec_deg:.3f}&zoom=4&show_grid=1&show_constellation_lines=1"
-                )
-                st.markdown(
-                    f"🔭 [In-The-Sky.org]({in_the_sky_url}) · [Wikisky]({wikisky_url})"
-                )
-
-                # Copy-friendly coordinates
-                coord_str = f"RA {ra_deg:.3f}°  Dec {dec_deg:.3f}°"
-                st.text_input(
-                    "Coordinates",
-                    value=coord_str,
-                    disabled=True,
-                    label_visibility="collapsed",
-                )
-
-            # Visibility section - one-line summary, details in expander
-            visibility_summary = ""
-            if "visibility" in match:
-                vis = match["visibility"]
-                if vis["globally_visible"]:
-                    visibility_summary = "Visible globally"
-                else:
-                    visibility_summary = f"Visible {vis['min_latitude']:.0f}° to {vis['max_latitude']:.0f}°"
-
-            with st.expander(
-                f"📍 Where to See This {f'({visibility_summary})' if visibility_summary else ''}"
-            ):
-                if "visibility" in match:
-                    vis = match["visibility"]
-
-                    # Latitude range
-                    if vis["globally_visible"]:
-                        st.success("✨ Visible from anywhere on Earth!")
-                    else:
-                        lat_range = (
-                            f"{vis['min_latitude']:.1f}° to "
-                            f"{vis['max_latitude']:.1f}°"
-                        )
-                        st.info(f"**Visible:** {lat_range} latitude")
-
-                        # Optimal viewing
-                        optimal = vis["optimal_latitude"]
-                        hemisphere = "N" if optimal >= 0 else "S"
-                        st.caption(f"**Best:** {abs(optimal):.1f}°{hemisphere}")
-
-                    # Geographic regions
-                    if "viewing_regions" in match and match["viewing_regions"]:
-                        regions_str = ", ".join(match["viewing_regions"])
-                        st.markdown(f"**Regions:** {regions_str}")
-
-                    # Example cities
-                    if "example_cities" in match and match["example_cities"]:
-                        st.markdown("**Example Cities:**")
-                        for city in match["example_cities"][:5]:
-                            lat_str = f"{abs(city['lat']):.1f}°"
-                            lat_str += "N" if city["lat"] >= 0 else "S"
-                            lon_str = f"{abs(city['lon']):.1f}°"
-                            lon_str += "E" if city["lon"] >= 0 else "W"
-                            st.markdown(f"• {city['name']} ({lat_str}, {lon_str})")
-
-                    # Best viewing months
-                    if "best_viewing_months" in match and match["best_viewing_months"]:
-                        months_str = ", ".join(match["best_viewing_months"])
-                        st.markdown(f"🗓️ **Best months:** {months_str}")
-
-                    st.markdown("### 🧭 Local sky map")
-                    st.caption(
-                        "Share your location to see where this constellation sits in your sky."
-                    )
-
-                    location_choice = st.radio(
-                        "Location source",
-                        ["Use browser (prompt)", "Enter manually"],
-                        horizontal=True,
-                        key=f"location_choice_{st.session_state.current_match_index}",
-                    )
-
-                    lat_val: float | None = None
-                    lon_val: float | None = None
-
-                    if location_choice.startswith("Use browser"):
-                        with st.spinner("Requesting browser location..."):
-                            loc = geolocation()
-                        if (
-                            loc
-                            and loc.get("lat") is not None
-                            and loc.get("lng") is not None
-                        ):
-                            lat_val = float(loc["lat"])
-                            lon_val = float(loc["lng"])
-                            st.success(
-                                f"Using browser location: {lat_val:.2f}°, {lon_val:.2f}°"
-                            )
-                        else:
-                            st.caption(
-                                "If the prompt was blocked, allow location access or switch to manual entry."
-                            )
-
-                    if lat_val is None or lon_val is None:
-                        col_lat, col_lon = st.columns(2)
-                        lat_val = col_lat.number_input(
-                            "Latitude (°)",
-                            min_value=-90.0,
-                            max_value=90.0,
-                            value=0.0,
-                            step=0.1,
-                            format="%.4f",
-                            key=f"manual_lat_{st.session_state.current_match_index}",
-                        )
-                        lon_val = col_lon.number_input(
-                            "Longitude (°)",
-                            min_value=-180.0,
-                            max_value=180.0,
-                            value=0.0,
-                            step=0.1,
-                            format="%.4f",
-                            key=f"manual_lon_{st.session_state.current_match_index}",
-                        )
-
-                    sky_map = render_local_sky_map(
-                        match,
-                        latitude=float(lat_val),
-                        longitude=float(lon_val),
-                        star_color_mode=str(
-                            st.session_state.get("star_color_mode", "Color by B–V")
-                        ),
-                    )
-
-                    if sky_map is not None:
-                        st.image(
-                            sky_map,
-                            use_container_width=True,
-                            caption=f"Sky view for {lat_val:.2f}°, {lon_val:.2f}° (now)",
-                        )
-                    else:
-                        st.info("Sky map unavailable for this match/location.")
-
-            # Advanced star data
-            with st.expander("🔬 Star Data"):
-                if "stars" in match:
-                    # Show star table with key columns
-                    star_display = match["stars"].copy()
-
-                    # Select relevant columns
-                    display_cols = []
-                    if "star_id" in star_display.columns:
-                        display_cols.append("star_id")
-                    if "ra" in star_display.columns:
-                        display_cols.append("ra")
-                    if "dec" in star_display.columns:
-                        display_cols.append("dec")
-                    if "magnitude" in star_display.columns:
-                        display_cols.append("magnitude")
-
-                    if display_cols:
-                        star_display = star_display[display_cols].head(20)
-                        st.dataframe(
-                            star_display,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-
-                        if len(match["stars"]) > 20:
-                            st.caption(f"Showing 20 of {len(match['stars'])} stars")
-
-            st.divider()
-
-            # Unified result image with toggles
+        # Render main image
+        if active_match is not None:
             unified = render_unified_view(
-                match,
+                active_match,
                 brightness=float(star_brightness),
                 star_color_mode=str(star_color_mode),
                 background_mode=str(background_mode),
@@ -1439,58 +1349,96 @@ def main():
                 show_circles=bool(show_circles_toggle),
                 show_lines=bool(show_constellation_lines),
             )
-            st.image(
-                unified,
-                use_container_width=True,
-                caption="Result overlay (configurable)",
+            st.image(unified, use_container_width=True)
+        else:
+            # Circles-only or background-only view
+            base_bg = st.session_state.background_cache.get(background_mode)
+            if base_bg is None and st.session_state.uploaded_image is not None:
+                base_bg = build_background(
+                    st.session_state.uploaded_image, mode=background_mode
+                )
+            canvas = (
+                base_bg.copy()
+                if base_bg is not None
+                else np.zeros_like(st.session_state.uploaded_image)
+            )
+            if show_circles_toggle and st.session_state.circles_ready:
+                canvas = draw_circles(
+                    canvas,
+                    st.session_state.circles,
+                    show_circles=True,
+                    show_centers=False,
+                    circle_color=get_theme_primary_rgb(),
+                    thickness=3,
+                    fill_alpha=0.25,
+                )
+            st.image(canvas, use_container_width=True)
+
+        # Navigation for matches
+        if st.session_state.matches_ready and st.session_state.matches:
+            st.divider()
+            nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 1])
+            prev_disabled = st.session_state.current_match_index == 0
+            next_disabled = (
+                st.session_state.current_match_index
+                >= len(st.session_state.matches) - 1
             )
 
-            # Bottom-centered navigation
-            st.divider()
+            if nav_col1.button(
+                "\uf060", disabled=prev_disabled, use_container_width=True
+            ):
+                st.session_state.current_match_index -= 1
+                st.rerun()
 
-            nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 1])
+            nav_col2.markdown(
+                f"<div style='text-align: center; padding: 12px; font-weight: 700;'>{st.session_state.current_match_index + 1} / {len(st.session_state.matches)}</div>",
+                unsafe_allow_html=True,
+            )
 
-            with nav_col1:
-                prev_disabled = st.session_state.current_match_index == 0
-                if st.button(
-                    "⬅️ Prev",
-                    disabled=prev_disabled,
-                    use_container_width=True,
-                ):
-                    st.session_state.current_match_index -= 1
-                    st.rerun()
+            if nav_col3.button(
+                "\uf061", disabled=next_disabled, use_container_width=True
+            ):
+                st.session_state.current_match_index += 1
+                st.rerun()
 
-            with nav_col2:
-                st.markdown(
-                    f"<div style='text-align: center; padding: 12px;'>"
-                    f"<strong>{st.session_state.current_match_index + 1} of {len(st.session_state.matches)}</strong>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+            st.caption("Navigation buttons use Font Awesome icons only.")
 
-            with nav_col3:
-                next_disabled = (
-                    st.session_state.current_match_index
-                    >= len(st.session_state.matches) - 1
-                )
-                if st.button(
-                    "Next ➡️",
-                    disabled=next_disabled,
-                    use_container_width=True,
-                ):
-                    st.session_state.current_match_index += 1
-                    st.rerun()
+            # Mini starmap with footprint
+            st.subheader("Mini starmap")
+            loc1, loc2 = st.columns(2)
+            lat_val = loc1.number_input(
+                "Latitude (°)",
+                min_value=-90.0,
+                max_value=90.0,
+                value=0.0,
+                step=0.1,
+                format="%.2f",
+            )
+            lon_val = loc2.number_input(
+                "Longitude (°)",
+                min_value=-180.0,
+                max_value=180.0,
+                value=0.0,
+                step=0.1,
+                format="%.2f",
+            )
+
+            sky_map = render_local_sky_map(
+                active_match,
+                latitude=float(lat_val),
+                longitude=float(lon_val),
+                star_color_mode=str(st.session_state.star_color_mode),
+            )
+            if sky_map is not None:
+                st.image(sky_map, use_container_width=True)
 
         # Reset button
-        if st.button("🔄 Start Over"):
-            st.session_state.uploaded_image = None
-            st.session_state.circles = None
-            st.session_state.centers = None
-            st.session_state.matches = []
+        if st.button("Reset", use_container_width=True):
+            reset_pipeline_state(clear_image=True)
             st.rerun()
 
     else:
-        st.info("👆 Upload an image to get started!")
+        st.info("Upload an image to get started. The pipeline will run automatically.")
 
 
 if __name__ == "__main__":
