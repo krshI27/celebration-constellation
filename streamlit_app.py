@@ -11,6 +11,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 # Add src directory to Python path for Streamlit Cloud deployment
 # This ensures the celebration_constellation package can be imported
@@ -135,20 +136,31 @@ def create_synthwave_gradient(shape: tuple[int, int, int]) -> np.ndarray:
 
     Uses a vertical purple→blue blend with gentle sine modulation to avoid flat fills.
     """
-    height, width, _ = shape
+    if len(shape) < 2:
+        raise ValueError("Expected image shape with height and width")
+
+    height, width = shape[:2]
+    channels = shape[2] if len(shape) > 2 else 3
+
     y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
     x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
 
     top = np.array([60, 30, 110], dtype=np.float32)  # muted violet
     bottom = np.array([15, 45, 95], dtype=np.float32)  # deep blue
 
-    base = top * (1.0 - y) + bottom * y
+    vertical_blend = (top * (1.0 - y) + bottom * y)[:, None, :]
+    base = np.broadcast_to(vertical_blend, (height, width, 3))
 
     # Gentle diagonal waves for depth; keep subtle to avoid noise
     ripple = 6.0 * np.sin((x * 1.2 + y * 1.6) * np.pi)
     gradient = base + ripple[:, :, None]
+    gradient = np.clip(gradient, 0, 255).astype(np.uint8)
 
-    return np.clip(gradient, 0, 255).astype(np.uint8)
+    if channels == 4:
+        alpha = np.full((height, width, 1), 255, dtype=np.uint8)
+        gradient = np.concatenate([gradient, alpha], axis=2)
+
+    return gradient
 
 
 def build_background(
@@ -377,7 +389,7 @@ def process_uploaded_image(
     return image, circles, centers
 
 
-def _compute_staged_backgrounds(image: np.ndarray):
+def _compute_staged_backgrounds(image: np.ndarray) -> dict[str, np.ndarray]:
     """Compute baseline and derived backgrounds for staged availability."""
 
     st.session_state.background_cache = {}
@@ -413,6 +425,8 @@ def _compute_staged_backgrounds(image: np.ndarray):
     st.session_state.background_cache["Original"] = image
     st.session_state.active_backgrounds.append("Original")
 
+    return st.session_state.background_cache
+
 
 def run_pipeline(
     uploaded_file,
@@ -423,8 +437,27 @@ def run_pipeline(
     radius_deg: float,
     star_brightness: float,
     max_circles: int = 50,
+    live_placeholders: dict[str, Any] | None = None,
+    detection_progress_placeholder: Any | None = None,
 ):
     """Run staged processing pipeline and update session state."""
+
+    live_slots = live_placeholders or {}
+    progress_bar = None
+
+    def update_live(name: str, image: np.ndarray | None, caption: str):
+        slot = live_slots.get(name)
+        if slot is not None and image is not None:
+            slot.image(image, caption=caption, use_container_width=True)
+
+    def update_progress(value: float, text: str):
+        nonlocal progress_bar
+        if detection_progress_placeholder is None:
+            return
+        if progress_bar is None:
+            progress_bar = detection_progress_placeholder.progress(value, text=text)
+        else:
+            progress_bar.progress(value, text=text)
 
     # If new upload provided, store and reset pipeline outputs
     if uploaded_file is not None:
@@ -441,9 +474,24 @@ def run_pipeline(
         pil_image = Image.open(uploaded_file)
         image = np.array(pil_image.convert("RGB"))
         st.session_state.uploaded_image = image
-        _compute_staged_backgrounds(image)
+        bg_cache = _compute_staged_backgrounds(image)
+        update_live("uploaded", image, "Uploaded image")
+        dark_greyscale = bg_cache.get("Dark Greyscale")
+        update_live(
+            "background",
+            dark_greyscale if dark_greyscale is not None else to_gray_rgb(image),
+            "Greyscale preview",
+        )
     else:
         image = st.session_state.uploaded_image
+        if image is not None:
+            update_live("uploaded", image, "Uploaded image")
+            gray_preview = (
+                st.session_state.background_cache.get("Dark Greyscale")
+                if st.session_state.background_cache
+                else to_gray_rgb(image)
+            )
+            update_live("background", gray_preview, "Greyscale preview")
 
     if image is None or st.session_state.uploaded_path is None:
         return
@@ -459,7 +507,9 @@ def run_pipeline(
         min_radius, max_radius = 20, 200
 
     # Circle detection
+    update_progress(0.05, "Preparing image for detection...")
     with st.spinner("Detecting circular objects..."):
+        update_progress(0.35, "Running circle detection...")
         image, circles, centers = detect_and_extract(
             Path(st.session_state.uploaded_path),
             min_radius=min_radius,
@@ -467,10 +517,27 @@ def run_pipeline(
             max_circles=max_circles,
             quality_threshold=quality_threshold,
         )
+    update_progress(0.9, "Scoring detections...")
     st.session_state.uploaded_image = image
     st.session_state.circles = circles
     st.session_state.centers = centers
     st.session_state.circles_ready = circles is not None and len(circles) > 0
+
+    if circles is not None and len(circles):
+        detection_preview = draw_circles(
+            image,
+            circles,
+            show_circles=True,
+            show_centers=False,
+            circle_color=get_theme_primary_rgb(),
+            fill_alpha=0.2,
+        )
+        update_live("detection", detection_preview, "Detected circles")
+    else:
+        slot = live_slots.get("detection")
+        if slot is not None:
+            slot.info("No circles detected.")
+    update_progress(1.0, "Circle detection complete")
 
     # Constellation matching (only if circles/centers found)
     if centers is not None and len(centers):
@@ -967,10 +1034,11 @@ def render_local_sky_map(
     if not np.any(valid):
         return None
 
-    # Prepare canvas
-    size = 620
+    # Prepare canvas (extra padding keeps labels visible)
+    size = 520
+    padding = 40
     center = (size // 2, size // 2)
-    horizon_r = center[0] - 20
+    horizon_r = center[0] - padding
     canvas = np.full((size, size, 3), (6, 6, 14), dtype=np.uint8)
 
     # Horizon circle
@@ -981,7 +1049,7 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "N",
-        (center[0] - 10, center[1] - horizon_r - 8),
+        (center[0] - 10, center[1] - horizon_r + 18),
         font,
         0.8,
         (120, 140, 255),
@@ -991,7 +1059,7 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "S",
-        (center[0] - 10, center[1] + horizon_r + 20),
+        (center[0] - 10, center[1] + horizon_r - 8),
         font,
         0.8,
         (120, 140, 255),
@@ -1001,7 +1069,7 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "E",
-        (center[0] + horizon_r + 12, center[1] + 6),
+        (center[0] + horizon_r - 6, center[1] + 6),
         font,
         0.8,
         (120, 140, 255),
@@ -1011,7 +1079,7 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "W",
-        (center[0] - horizon_r - 28, center[1] + 6),
+        (center[0] - horizon_r - 16, center[1] + 6),
         font,
         0.8,
         (120, 140, 255),
@@ -1036,6 +1104,21 @@ def render_local_sky_map(
     if "b_v" in stars_df.columns:
         bvs = stars_df.loc[mask, "b_v"].to_numpy(dtype=float)
         per_star_colors = get_per_star_colors(bvs, theme_rgb)
+
+    # Keep the mini-map uncluttered: plot only the brightest stars when many are visible
+    max_plot_stars = 120
+    if len(alt) > max_plot_stars:
+        if magnitudes is not None and len(magnitudes) == len(alt):
+            keep_idx = np.argsort(magnitudes)[:max_plot_stars]
+        else:
+            keep_idx = np.linspace(0, len(alt) - 1, max_plot_stars, dtype=int)
+
+        alt = alt[keep_idx]
+        az = az[keep_idx]
+        if magnitudes is not None:
+            magnitudes = magnitudes[keep_idx]
+        if per_star_colors is not None:
+            per_star_colors = per_star_colors[keep_idx]
 
     # Color resolution
     per_star_colors, fallback_color = resolve_star_color(
@@ -1129,9 +1212,9 @@ def main():
         <style>
         .stButton > button {
             min-height: 44px;
-            font-weight: 600;
+            font-weight: 900;
             border-radius: 10px;
-            font-family: "Font Awesome 6 Free", "Segoe UI", system-ui, -apple-system, sans-serif;
+            font-family: "Font Awesome 6 Free", "Font Awesome 6 Brands", "Font Awesome 5 Free", "Segoe UI", system-ui, -apple-system, sans-serif;
         }
         .stButton > button[kind="primary"] {
             min-height: 52px;
@@ -1159,8 +1242,17 @@ def main():
         "Upload an image to auto-run detection and matching. Adjust settings in the sidebar, then hit Run to reprocess."
     )
 
-    # Sidebar processing form
+    # Sidebar upload and processing form
     with st.sidebar:
+        st.header("Image")
+        uploaded_file = st.file_uploader(
+            "Upload a photo",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=False,
+            key="uploader",
+        )
+
+        st.divider()
         st.header("Processing")
         with st.form("processing_form"):
             detection_scale = st.selectbox(
@@ -1212,12 +1304,22 @@ def main():
 
         st.caption("Changes apply when Run is clicked. Auto-runs once on upload.")
 
-    uploaded_file = st.file_uploader(
-        "Upload a photo",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=False,
-        key="uploader",
-    )
+    # Live feed so users see stages as soon as they are ready
+    live_placeholders: dict[str, Any] | None = None
+    detection_progress_placeholder: Any | None = None
+    if uploaded_file is not None or st.session_state.uploaded_image is not None:
+        live_container = st.container()
+        live_container.subheader("Live processing feed")
+        live_container.caption(
+            "Stages update as soon as they finish: upload → greyscale → detection."
+        )
+        live_cols = live_container.columns(3)
+        live_placeholders = {
+            "uploaded": live_cols[0].empty(),
+            "background": live_cols[1].empty(),
+            "detection": live_cols[2].empty(),
+        }
+        detection_progress_placeholder = live_container.empty()
 
     # Trigger pipeline: auto on first upload, manual on Run
     new_file_selected = uploaded_file is not None and (
@@ -1232,6 +1334,8 @@ def main():
             num_regions=num_regions,
             radius_deg=float(radius_deg),
             star_brightness=float(star_brightness),
+            live_placeholders=live_placeholders,
+            detection_progress_placeholder=detection_progress_placeholder,
         )
     elif should_auto_run:
         run_pipeline(
@@ -1241,6 +1345,8 @@ def main():
             num_regions=num_regions,
             radius_deg=float(radius_deg),
             star_brightness=float(star_brightness),
+            live_placeholders=live_placeholders,
+            detection_progress_placeholder=detection_progress_placeholder,
         )
 
     # Status row
