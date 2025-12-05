@@ -103,6 +103,9 @@ def get_per_star_colors(
 ) -> np.ndarray:
     """Map B-V color index to RGB colors (blue/hot to red/cool).
 
+    Uses a wider, more saturated palette so B–V coloring is visually
+    distinct from a single highlight color.
+
     Args:
         b_v_values: Array of B-V color indices
         theme_rgb: Default color for missing data
@@ -114,16 +117,20 @@ def get_per_star_colors(
     for bv in b_v_values:
         if np.isnan(bv):
             colors.append(theme_rgb)
+        elif bv <= -0.1:
+            colors.append((100, 140, 255))  # Deep blue (O-type)
         elif bv <= 0.0:
-            colors.append((180, 200, 255))  # Blue (very hot stars)
+            colors.append((140, 175, 255))  # Blue (B-type)
         elif bv <= 0.3:
-            colors.append((220, 230, 255))  # Light blue
+            colors.append((185, 210, 255))  # Blue-white (A-type)
         elif bv <= 0.6:
-            colors.append((255, 255, 255))  # White
-        elif bv <= 1.0:
-            colors.append((255, 235, 180))  # Yellow
+            colors.append((255, 255, 240))  # White-yellow (F-type)
+        elif bv <= 0.8:
+            colors.append((255, 245, 180))  # Yellow (G-type, Sun-like)
+        elif bv <= 1.2:
+            colors.append((255, 210, 130))  # Orange (K-type)
         else:
-            colors.append((255, 210, 150))  # Orange/red (cool stars)
+            colors.append((255, 170, 100))  # Red-orange (M-type, coolest)
     return np.array(colors, dtype=np.uint8)
 
 
@@ -205,12 +212,16 @@ def resolve_star_color(
     theme_rgb: tuple[int, int, int],
     per_star_colors: np.ndarray | None,
 ) -> tuple[np.ndarray | None, tuple[int, int, int]]:
-    """Return per-star palette and fallback color based on mode."""
+    """Return per-star palette and fallback color based on mode.
 
+    For B-V coloring, we return per_star_colors and a warm white fallback
+    (for stars missing B-V data) so that it visually differs from Theme blue.
+    """
     mode = (star_color_mode or "").lower()
 
     if mode.startswith("color by"):
-        return per_star_colors, theme_rgb
+        # Use warm white as fallback for missing B-V data, not theme color
+        return per_star_colors, (255, 250, 230)
 
     if mode.startswith("white"):
         return None, (245, 245, 245)
@@ -218,7 +229,7 @@ def resolve_star_color(
     if "neon" in mode:
         return None, NEON_PINK
 
-    # Default to theme
+    # "Theme blue" or default
     return None, theme_rgb
 
 
@@ -336,6 +347,9 @@ def initialize_session_state():
     if "star_catalog" not in st.session_state:
         st.session_state.star_catalog = StarCatalog()
 
+    if "processing_finished" not in st.session_state:
+        st.session_state.processing_finished = False
+
 
 def reset_pipeline_state(clear_image: bool = False):
     """Reset staged outputs and readiness flags.
@@ -358,6 +372,7 @@ def reset_pipeline_state(clear_image: bool = False):
     st.session_state.centers = None
     st.session_state.matches = []
     st.session_state.current_match_index = 0
+    st.session_state.processing_finished = False
 
 
 def process_uploaded_image(
@@ -421,9 +436,9 @@ def _compute_staged_backgrounds(image: np.ndarray) -> dict[str, np.ndarray]:
     st.session_state.bg_ready_synth = True
     st.session_state.active_backgrounds.append("Synthwave Colorized")
 
-    # Original (optional) once available
-    st.session_state.background_cache["Original"] = image
-    st.session_state.active_backgrounds.append("Original")
+    # NOTE: 'Original' removed from backgrounds per user feedback.
+    # Keeping image in cache for internal use but not in the dropdown.
+    st.session_state.background_cache["_original"] = image
 
     return st.session_state.background_cache
 
@@ -524,8 +539,10 @@ def run_pipeline(
     st.session_state.circles_ready = circles is not None and len(circles) > 0
 
     if circles is not None and len(circles):
+        # Use greyscale background for the detection preview
+        gray_bg = to_gray_rgb(image)
         detection_preview = draw_circles(
-            image,
+            gray_bg,
             circles,
             show_circles=True,
             show_centers=False,
@@ -537,17 +554,27 @@ def run_pipeline(
         slot = live_slots.get("detection")
         if slot is not None:
             slot.info("No circles detected.")
-    update_progress(1.0, "Circle detection complete")
+    # Detection progress complete – placeholder will be reused for matching
+    if progress_bar is not None:
+        progress_bar.empty()
 
     # Constellation matching (only if circles/centers found)
     if centers is not None and len(centers):
-        matches = find_constellation_matches(centers, num_regions, float(radius_deg))
+        matches = find_constellation_matches(
+            centers,
+            num_regions,
+            float(radius_deg),
+            progress_placeholder=detection_progress_placeholder,
+        )
         st.session_state.matches = matches or []
         st.session_state.matches_ready = bool(matches)
         st.session_state.current_match_index = 0
     else:
         st.session_state.matches = []
         st.session_state.matches_ready = False
+
+    # Mark processing finished so live feed can be hidden on next rerun
+    st.session_state.processing_finished = True
 
     # Persist rendering params
     st.session_state.star_brightness = star_brightness
@@ -566,8 +593,14 @@ def find_constellation_matches(
     centers: np.ndarray,
     num_regions: int = 100,
     radius_deg: float = 20.0,
+    progress_placeholder: Any | None = None,
 ):
-    """Find matching star constellations."""
+    """Find matching star constellations.
+
+    If progress_placeholder is provided, the matching progress bar is drawn
+    into it (reusing the detection progress slot); otherwise a new one is created.
+    The progress bar is cleared once matching completes.
+    """
     catalog = st.session_state.star_catalog
 
     with st.spinner("Searching the night sky for matching constellations..."):
@@ -583,15 +616,22 @@ def find_constellation_matches(
             )
             region["positions"] = positions
 
-        # Match circle centers to sky regions
-        # Progress bar for matching
-        progress = st.progress(0.0)
+        # Reuse provided placeholder or create new progress bar
+        if progress_placeholder is not None:
+            progress = progress_placeholder.progress(
+                0.0, text="Matching constellations..."
+            )
+        else:
+            progress = st.progress(0.0, text="Matching constellations...")
 
         def _progress_cb(done: int, total: int):
             frac = max(0.0, min(1.0, done / max(total, 1)))
-            progress.progress(frac)
+            progress.progress(frac, text=f"Matching region {done}/{total}")
 
         matches = match_to_sky_regions(centers, regions, progress_callback=_progress_cb)
+
+    # Clear the progress bar once matching is done
+    progress.empty()
 
     st.session_state.matches = matches
     st.session_state.current_match_index = 0
@@ -856,14 +896,15 @@ def render_unified_view(
     canvas = base.copy()
 
     # Star colors
-    if (
-        background_mode == "Synthwave Gradient"
-        and not star_color_mode.lower().startswith("color by")
-    ):
-        star_color_mode = "Neon pink"
+    # On Synthwave backgrounds, "Theme blue" becomes "Neon pink" for better contrast.
+    # B-V and White modes remain unchanged on all backgrounds.
+    effective_star_color_mode = star_color_mode
+    if background_mode in ("Synthwave Gradient", "Synthwave Colorized"):
+        if star_color_mode.lower() == "theme blue":
+            effective_star_color_mode = "Neon pink"
 
     per_star_colors, fallback_color = resolve_star_color(
-        star_color_mode, theme_rgb, per_star_colors
+        effective_star_color_mode, theme_rgb, per_star_colors
     )
 
     # Draw stars
@@ -1034,9 +1075,9 @@ def render_local_sky_map(
     if not np.any(valid):
         return None
 
-    # Prepare canvas (extra padding keeps labels visible)
-    size = 520
-    padding = 40
+    # Prepare canvas with fixed size (absolute, not relative to page width)
+    size = 400
+    padding = 50  # Increased padding for compass labels
     center = (size // 2, size // 2)
     horizon_r = center[0] - padding
     canvas = np.full((size, size, 3), (6, 6, 14), dtype=np.uint8)
@@ -1044,14 +1085,15 @@ def render_local_sky_map(
     # Horizon circle
     cv2.circle(canvas, center, horizon_r, (40, 40, 70), 2, cv2.LINE_AA)
 
-    # Cardinal labels
+    # Cardinal labels - positioned outside the horizon circle
     font = cv2.FONT_HERSHEY_SIMPLEX
+    label_offset = 28  # Distance outside the horizon circle
     cv2.putText(
         canvas,
         "N",
-        (center[0] - 10, center[1] - horizon_r + 18),
+        (center[0] - 8, center[1] - horizon_r - label_offset + 20),
         font,
-        0.8,
+        0.7,
         (120, 140, 255),
         2,
         cv2.LINE_AA,
@@ -1059,9 +1101,9 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "S",
-        (center[0] - 10, center[1] + horizon_r - 8),
+        (center[0] - 8, center[1] + horizon_r + label_offset),
         font,
-        0.8,
+        0.7,
         (120, 140, 255),
         2,
         cv2.LINE_AA,
@@ -1069,9 +1111,9 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "E",
-        (center[0] + horizon_r - 6, center[1] + 6),
+        (center[0] + horizon_r + label_offset - 12, center[1] + 5),
         font,
-        0.8,
+        0.7,
         (120, 140, 255),
         2,
         cv2.LINE_AA,
@@ -1079,9 +1121,9 @@ def render_local_sky_map(
     cv2.putText(
         canvas,
         "W",
-        (center[0] - horizon_r - 16, center[1] + 6),
+        (center[0] - horizon_r - label_offset - 6, center[1] + 5),
         font,
-        0.8,
+        0.7,
         (120, 140, 255),
         2,
         cv2.LINE_AA,
@@ -1238,12 +1280,13 @@ def main():
     initialize_session_state()
 
     st.title("Celebration Constellation")
-    st.caption(
-        "Upload an image to auto-run detection and matching. Adjust settings in the sidebar, then hit Run to reprocess."
-    )
 
     # Sidebar upload and processing form
     with st.sidebar:
+        st.caption(
+            "Upload an image to auto-run detection and matching. "
+            "Adjust settings below, then hit Run to reprocess."
+        )
         st.header("Image")
         uploaded_file = st.file_uploader(
             "Upload a photo",
@@ -1305,9 +1348,13 @@ def main():
         st.caption("Changes apply when Run is clicked. Auto-runs once on upload.")
 
     # Live feed so users see stages as soon as they are ready
+    # Once processing finishes, we hide this section to keep the viewer at the top.
     live_placeholders: dict[str, Any] | None = None
     detection_progress_placeholder: Any | None = None
-    if uploaded_file is not None or st.session_state.uploaded_image is not None:
+    show_live_feed = (
+        uploaded_file is not None or st.session_state.uploaded_image is not None
+    ) and not st.session_state.processing_finished
+    if show_live_feed:
         live_container = st.container()
         live_container.subheader("Live processing feed")
         live_container.caption(
@@ -1349,25 +1396,7 @@ def main():
             detection_progress_placeholder=detection_progress_placeholder,
         )
 
-    # Status row
-    if st.session_state.uploaded_image is not None:
-        status_cols = st.columns(4)
-        status_cols[0].markdown(
-            f"<span class='status-pill {'ready' if st.session_state.bg_ready_dark or st.session_state.bg_ready_synth else 'wait'}'>BG</span>",
-            unsafe_allow_html=True,
-        )
-        status_cols[1].markdown(
-            f"<span class='status-pill {'ready' if st.session_state.circles_ready else 'wait'}'>Circles</span>",
-            unsafe_allow_html=True,
-        )
-        status_cols[2].markdown(
-            f"<span class='status-pill {'ready' if st.session_state.matches_ready else 'wait'}'>Matches</span>",
-            unsafe_allow_html=True,
-        )
-        status_cols[3].markdown(
-            f"<span class='status-pill ready'>Black bg</span>",
-            unsafe_allow_html=True,
-        )
+    # Status badges removed per user feedback (they were unclear in the UI).
 
     # Viewer and layer controls
     if st.session_state.uploaded_image is not None:
@@ -1376,6 +1405,11 @@ def main():
         # Layer controls in main area
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([2, 1, 1, 1])
         available_backgrounds = st.session_state.active_backgrounds or ["Black"]
+
+        def _on_bg_change():
+            """Immediately persist background mode when user selects."""
+            st.session_state.background_mode = st.session_state._bg_select
+
         background_mode = ctrl1.selectbox(
             "Background",
             options=available_backgrounds,
@@ -1384,8 +1418,9 @@ def main():
                 if st.session_state.background_mode in available_backgrounds
                 else 0
             ),
+            key="_bg_select",
+            on_change=_on_bg_change,
         )
-        st.session_state.background_mode = background_mode
 
         show_circles_toggle = ctrl2.checkbox(
             "Circles",
@@ -1401,14 +1436,23 @@ def main():
         )
         st.session_state.show_stars = show_stars_toggle
 
+        # Lines data file (constellation_lines.json) is not yet available.
+        # Disable toggle until the file is added in a future release.
+        lines_available = False
         show_constellation_lines = ctrl4.checkbox(
             "Lines",
             value=st.session_state.show_constellation_lines,
-            disabled=not st.session_state.matches_ready,
+            disabled=not (st.session_state.matches_ready and lines_available),
+            help="Constellation lines not yet available (requires constellation_lines.json).",
         )
         st.session_state.show_constellation_lines = show_constellation_lines
 
         ctrl5, ctrl6 = st.columns([1, 1])
+
+        def _on_star_color_change():
+            """Immediately persist star color mode when user selects."""
+            st.session_state.star_color_mode = st.session_state._star_color_select
+
         star_color_mode = ctrl5.selectbox(
             "Star color",
             ["Color by B–V", "Theme blue", "White", "Neon pink"],
@@ -1423,9 +1467,10 @@ def main():
                 ]
                 else "Color by B–V"
             ),
+            key="_star_color_select",
+            on_change=_on_star_color_change,
             disabled=not st.session_state.matches_ready,
         )
-        st.session_state.star_color_mode = star_color_mode
 
         star_brightness = ctrl6.slider(
             "Star size",
@@ -1536,7 +1581,7 @@ def main():
                 star_color_mode=str(st.session_state.star_color_mode),
             )
             if sky_map is not None:
-                st.image(sky_map, use_container_width=True)
+                st.image(sky_map, width=400)  # Fixed size, not stretched
 
         # Reset button
         if st.button("Reset", use_container_width=True):
