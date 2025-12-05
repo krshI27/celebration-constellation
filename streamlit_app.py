@@ -146,8 +146,10 @@ def create_synthwave_gradient(shape: tuple[int, int, int]) -> np.ndarray:
     if len(shape) < 2:
         raise ValueError("Expected image shape with height and width")
 
-    height, width = shape[:2]
-    channels = shape[2] if len(shape) > 2 else 3
+    height, width = int(shape[0]), int(shape[1])
+    if height <= 0 or width <= 0:
+        raise ValueError(f"Invalid image dimensions: {height}x{width}")
+    channels = int(shape[2]) if len(shape) > 2 else 3
 
     y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
     x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
@@ -410,6 +412,12 @@ def _compute_staged_backgrounds(image: np.ndarray) -> dict[str, np.ndarray]:
     st.session_state.background_cache = {}
     st.session_state.active_backgrounds = ["Black"]
 
+    # Validate image before processing
+    if image is None or image.size == 0 or len(image.shape) < 2:
+        raise ValueError(
+            f"Invalid image for background computation: shape={getattr(image, 'shape', None)}"
+        )
+
     # Baseline black background
     st.session_state.background_cache["Black"] = np.zeros_like(image)
 
@@ -487,7 +495,16 @@ def run_pipeline(
         # Read image into memory for backgrounds
         uploaded_file.seek(0)
         pil_image = Image.open(uploaded_file)
+        pil_image.load()  # Force load to catch corrupt images early
         image = np.array(pil_image.convert("RGB"))
+
+        # Validate image dimensions
+        if image.size == 0 or len(image.shape) < 2:
+            st.error(
+                f"Could not load image properly. Please try a different image file."
+            )
+            return
+
         st.session_state.uploaded_image = image
         bg_cache = _compute_staged_backgrounds(image)
         update_live("uploaded", image, "Uploaded image")
