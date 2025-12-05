@@ -508,22 +508,14 @@ def run_pipeline(
         st.session_state.uploaded_image = image
         bg_cache = _compute_staged_backgrounds(image)
         update_live("uploaded", image, "Uploaded image")
-        dark_greyscale = bg_cache.get("Dark Greyscale")
-        update_live(
-            "background",
-            dark_greyscale if dark_greyscale is not None else to_gray_rgb(image),
-            "Greyscale preview",
-        )
+        # Use same greyscale as detection preview for visual consistency
+        update_live("background", to_gray_rgb(image), "Greyscale")
     else:
         image = st.session_state.uploaded_image
         if image is not None:
             update_live("uploaded", image, "Uploaded image")
-            gray_preview = (
-                st.session_state.background_cache.get("Dark Greyscale")
-                if st.session_state.background_cache
-                else to_gray_rgb(image)
-            )
-            update_live("background", gray_preview, "Greyscale preview")
+            # Use same greyscale as detection preview for visual consistency
+            update_live("background", to_gray_rgb(image), "Greyscale")
 
     if image is None or st.session_state.uploaded_path is None:
         return
@@ -1349,14 +1341,8 @@ def main():
                 help="Angular radius per sampled sky window.",
             )
 
-            star_brightness = st.slider(
-                "Star Size",
-                min_value=0.5,
-                max_value=3.0,
-                value=1.0,
-                step=0.1,
-                help="Size multiplier for stars in overlays.",
-            )
+            # Star brightness control moved to Viewer section for easier adjustment
+            star_brightness = st.session_state.get("star_brightness", 1.0)
 
             run_clicked = st.form_submit_button(
                 "Run", type="primary", use_container_width=True
@@ -1553,7 +1539,7 @@ def main():
             )
 
             if nav_col1.button(
-                "\uf060", disabled=prev_disabled, use_container_width=True
+                "← Previous", disabled=prev_disabled, use_container_width=True
             ):
                 st.session_state.current_match_index -= 1
                 st.rerun()
@@ -1564,41 +1550,74 @@ def main():
             )
 
             if nav_col3.button(
-                "\uf061", disabled=next_disabled, use_container_width=True
+                "Next →", disabled=next_disabled, use_container_width=True
             ):
                 st.session_state.current_match_index += 1
                 st.rerun()
 
-            st.caption("Navigation buttons use Font Awesome icons only.")
-
             # Mini starmap with footprint
             st.subheader("Mini starmap")
-            loc1, loc2 = st.columns(2)
-            lat_val = loc1.number_input(
-                "Latitude (°)",
-                min_value=-90.0,
-                max_value=90.0,
-                value=0.0,
-                step=0.1,
-                format="%.2f",
-            )
-            lon_val = loc2.number_input(
-                "Longitude (°)",
-                min_value=-180.0,
-                max_value=180.0,
-                value=0.0,
-                step=0.1,
-                format="%.2f",
-            )
+            map_col, info_col = st.columns([1, 1])
 
-            sky_map = render_local_sky_map(
-                active_match,
-                latitude=float(lat_val),
-                longitude=float(lon_val),
-                star_color_mode=str(st.session_state.star_color_mode),
-            )
-            if sky_map is not None:
-                st.image(sky_map, width=400)  # Fixed size, not stretched
+            with map_col:
+                sky_map = render_local_sky_map(
+                    active_match,
+                    latitude=float(st.session_state.get("starmap_lat", 0.0)),
+                    longitude=float(st.session_state.get("starmap_lon", 0.0)),
+                    star_color_mode=str(st.session_state.star_color_mode),
+                )
+                if sky_map is not None:
+                    st.image(sky_map, use_container_width=True)
+
+                loc1, loc2 = st.columns(2)
+                lat_val = loc1.number_input(
+                    "Latitude (°)",
+                    min_value=-90.0,
+                    max_value=90.0,
+                    value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    key="starmap_lat",
+                )
+                lon_val = loc2.number_input(
+                    "Longitude (°)",
+                    min_value=-180.0,
+                    max_value=180.0,
+                    value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    key="starmap_lon",
+                )
+
+            with info_col:
+                st.markdown(
+                    """
+**How to read this map:**
+
+This is a **polar projection** of your local sky at the given location and current time.
+
+- **Outer circle** = horizon (0° altitude)
+- **Center** = directly overhead (zenith, 90° altitude)
+- **N/S/E/W** = compass directions
+
+**Map symbols:**
+- ⭐ **Yellow star marker** = center of your matched constellation region
+- 🔷 **Blue rectangle** = the sky area ('footprint') corresponding to your uploaded image
+
+**Why is the rectangle skewed?**
+The polar projection distorts shapes, especially near the horizon. This is normal.
+
+**Why are there more stars here than in the viewer?**
+This map shows the brightest stars from the full catalog. The main viewer filters to show only stars within your matched region.
+
+**How to find your constellation:**
+1. Set your latitude and longitude
+2. Note which compass direction (N/S/E/W) the yellow marker is closest to
+3. Face that direction outside
+4. Look up at roughly the indicated altitude (distance from edge to center)
+5. Find the star pattern matching your image!
+"""
+                )
 
         # Reset button
         if st.button("Reset", use_container_width=True):
