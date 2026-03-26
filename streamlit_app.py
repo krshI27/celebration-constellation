@@ -7,6 +7,7 @@ This app provides an interactive interface for:
 - Swipeable image comparison between photo and sky
 """
 
+import io
 import os
 import sys
 from datetime import datetime
@@ -38,7 +39,7 @@ from celebration_constellation.lines import (
     build_line_segments_for_region,
     load_constellation_lines,
 )
-from celebration_constellation.matching import match_to_sky_regions
+from celebration_constellation.matching import apply_transform, match_to_sky_regions
 from celebration_constellation.visualization import (
     create_composite_overlay,
     create_constellation_visualization,
@@ -115,7 +116,11 @@ def get_per_star_colors(
     """
     colors = []
     for bv in b_v_values:
-        if np.isnan(bv):
+        try:
+            bv_is_nan = bv is None or np.isnan(bv)
+        except (TypeError, ValueError):
+            bv_is_nan = True
+        if bv_is_nan:
             colors.append(theme_rgb)
         elif bv <= -0.1:
             colors.append((100, 140, 255))  # Deep blue (O-type)
@@ -444,10 +449,6 @@ def _compute_staged_backgrounds(image: np.ndarray) -> dict[str, np.ndarray]:
     st.session_state.bg_ready_synth = True
     st.session_state.active_backgrounds.append("Synthwave Colorized")
 
-    # NOTE: 'Original' removed from backgrounds per user feedback.
-    # Keeping image in cache for internal use but not in the dropdown.
-    st.session_state.background_cache["_original"] = image
-
     return st.session_state.background_cache
 
 
@@ -576,6 +577,28 @@ def run_pipeline(
             progress_placeholder=detection_progress_placeholder,
         )
         st.session_state.matches = matches or []
+        # Re-sort matches by visual quality: count how many circles
+        # actually contain a star in image space (not the inflated RANSAC
+        # inlier count which over-reports in dense star regions).
+        circles = st.session_state.circles
+        if st.session_state.matches and circles is not None and len(circles):
+            for m in st.session_state.matches:
+                tp = m.get("target_positions")
+                if tp is not None and len(tp):
+                    simg = apply_inverse_transform(
+                        tp, m["scale"], m["rotation"], m["translation"]
+                    )
+                    hits = 0
+                    for cx, cy, cr in circles:
+                        d = np.sqrt((simg[:, 0] - cx) ** 2 + (simg[:, 1] - cy) ** 2)
+                        if np.any(d <= cr):
+                            hits += 1
+                    m["visual_hits"] = hits
+                else:
+                    m["visual_hits"] = 0
+            st.session_state.matches.sort(
+                key=lambda x: x.get("visual_hits", 0), reverse=True
+            )
         st.session_state.matches_ready = bool(matches)
         st.session_state.current_match_index = 0
     else:
@@ -1138,7 +1161,50 @@ def render_local_sky_map(
         cv2.LINE_AA,
     )
 
-    # Only consider stars above/barely below horizon for plotting
+    def to_xy(alt_deg: float, az_deg: float) -> tuple[int, int]:
+        r = (90.0 - np.clip(alt_deg, 0.0, 90.0)) / 90.0 * horizon_r
+        theta = np.deg2rad(az_deg - 90.0)
+        x = int(center[0] + r * np.cos(theta))
+        y = int(center[1] + r * np.sin(theta))
+        return x, y
+
+    # Background layer: all bright stars in muted grey
+    try:
+        catalog = st.session_state.star_catalog
+        all_stars = catalog.load_catalog()
+        bright = all_stars[all_stars["magnitude"] <= 5.0]
+        bg_coords = SkyCoord(
+            ra=bright["ra"].values * u.deg,
+            dec=bright["dec"].values * u.deg,
+            frame="icrs",
+        )
+        bg_altaz = bg_coords.transform_to(AltAz(obstime=obstime, location=location))
+        bg_alt = bg_altaz.alt.deg
+        bg_az = bg_altaz.az.deg
+        bg_mag = bright["magnitude"].values
+
+        # Only above horizon, limit to brightest 300
+        bg_visible = np.isfinite(bg_alt) & (bg_alt > 0)
+        bg_alt_v = bg_alt[bg_visible]
+        bg_az_v = bg_az[bg_visible]
+        bg_mag_v = bg_mag[bg_visible]
+        if len(bg_alt_v) > 300:
+            keep = np.argsort(bg_mag_v)[:300]
+            bg_alt_v, bg_az_v, bg_mag_v = bg_alt_v[keep], bg_az_v[keep], bg_mag_v[keep]
+
+        for a, z, m in zip(bg_alt_v, bg_az_v, bg_mag_v):
+            x, y = to_xy(a, z)
+            if not (0 <= x < size and 0 <= y < size):
+                continue
+            m_c = max(0.0, min(6.0, m))
+            r = max(1, min(6, int(8.0 * np.exp(-m_c / 3.0))))
+            # Muted grey, dimmer stars are fainter
+            grey = max(25, int(70 * np.exp(-m_c / 4.0)))
+            cv2.circle(canvas, (x, y), r, (grey, grey, grey + 5), -1)
+    except Exception:
+        pass
+
+    # Matched-region stars: filtered and coloured
     mask = valid & (alt > -5)
     if not np.any(mask):
         mask = valid
@@ -1156,7 +1222,6 @@ def render_local_sky_map(
         bvs = stars_df.loc[mask, "b_v"].to_numpy(dtype=float)
         per_star_colors = get_per_star_colors(bvs, theme_rgb)
 
-    # Keep the mini-map uncluttered: plot only the brightest stars when many are visible
     max_plot_stars = 120
     if len(alt) > max_plot_stars:
         if magnitudes is not None and len(magnitudes) == len(alt):
@@ -1171,19 +1236,11 @@ def render_local_sky_map(
         if per_star_colors is not None:
             per_star_colors = per_star_colors[keep_idx]
 
-    # Color resolution
     per_star_colors, fallback_color = resolve_star_color(
         star_color_mode, theme_rgb, per_star_colors
     )
 
-    def to_xy(alt_deg: float, az_deg: float) -> tuple[int, int]:
-        r = (90.0 - np.clip(alt_deg, 0.0, 90.0)) / 90.0 * horizon_r
-        theta = np.deg2rad(az_deg - 90.0)
-        x = int(center[0] + r * np.cos(theta))
-        y = int(center[1] + r * np.sin(theta))
-        return x, y
-
-    # Draw stars
+    # Draw matched-region stars (brighter, coloured)
     for idx, (a, z) in enumerate(zip(alt, az)):
         x, y = to_xy(a, z)
         if not (0 <= x < size and 0 <= y < size):
@@ -1203,11 +1260,101 @@ def render_local_sky_map(
         cv2.circle(canvas, (x, y), radius, color, -1)
         cv2.circle(canvas, (x, y), radius + 3, tuple(int(c * 0.5) for c in color), 1)
 
-    # Highlight region bounding the matched constellation
-    if len(alt) >= 2:
+    # Highlight region: project image corners onto the sky map
+    # This preserves the image's aspect ratio and orientation.
+    footprint_ok = False
+    if (
+        st.session_state.uploaded_image is not None
+        and "scale" in match
+        and "rotation" in match
+        and "translation" in match
+    ):
+        img_h, img_w = st.session_state.uploaded_image.shape[:2]
+        # Image corners in pixel space
+        img_corners = np.array(
+            [[0, 0], [img_w, 0], [img_w, img_h], [0, img_h]], dtype=float
+        )
+        # Forward transform: image pixels → stereographic
+        stereo_corners = apply_transform(
+            img_corners, match["scale"], match["rotation"],
+            np.asarray(match["translation"]),
+        )
+        # Inverse stereographic → RA/Dec
+        ra0 = np.deg2rad(match["ra"])
+        dec0 = np.deg2rad(match["dec"])
+        sx, sy = stereo_corners[:, 0], stereo_corners[:, 1]
+        rho = np.sqrt(sx**2 + sy**2)
+        c = 2 * np.arctan2(rho, 2)
+        corner_dec = np.arcsin(
+            np.cos(c) * np.sin(dec0) + sy * np.sin(c) * np.cos(dec0) / np.maximum(rho, 1e-12)
+        )
+        corner_ra = ra0 + np.arctan2(
+            sx * np.sin(c),
+            rho * np.cos(dec0) * np.cos(c) - sy * np.sin(dec0) * np.sin(c),
+        )
+        # Handle rho ≈ 0 (center of projection)
+        near_center = rho < 1e-12
+        corner_dec[near_center] = dec0
+        corner_ra[near_center] = ra0
+
+        try:
+            corner_coords = SkyCoord(
+                ra=np.rad2deg(corner_ra) * u.deg,
+                dec=np.rad2deg(corner_dec) * u.deg,
+                frame="icrs",
+            )
+            corner_altaz = corner_coords.transform_to(
+                AltAz(obstime=obstime, location=location)
+            )
+            c_alt = corner_altaz.alt.deg
+            c_az = corner_altaz.az.deg
+
+            if np.all(np.isfinite(c_alt)) and np.all(np.isfinite(c_az)):
+                corners = [to_xy(a, z) for a, z in zip(c_alt, c_az)]
+                overlay = np.zeros_like(canvas)
+                cv2.fillPoly(
+                    overlay, [np.array(corners, dtype=np.int32)], (80, 120, 200)
+                )
+                canvas = cv2.addWeighted(canvas, 1.0, overlay, 0.15, 0)
+                cv2.polylines(
+                    canvas,
+                    [np.array(corners, dtype=np.int32)],
+                    True,
+                    (160, 200, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                # Centre marker
+                mid_alt = float(np.mean(c_alt))
+                mid_az = float(np.mean(c_az))
+                cx, cy = to_xy(mid_alt, mid_az)
+                cv2.drawMarker(
+                    canvas,
+                    (cx, cy),
+                    (255, 220, 120),
+                    cv2.MARKER_STAR,
+                    18,
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    canvas,
+                    "Image footprint",
+                    (cx - 70, cy - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (180, 210, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+                footprint_ok = True
+        except Exception:
+            pass
+
+    # Fallback: bounding box of matched stars (if image-corner projection failed)
+    if not footprint_ok and len(alt) >= 2:
         min_alt, max_alt = float(np.min(alt)), float(np.max(alt))
         min_az, max_az = float(np.min(az)), float(np.max(az))
-
         corners = [
             to_xy(min_alt, min_az),
             to_xy(min_alt, max_az),
@@ -1225,8 +1372,6 @@ def render_local_sky_map(
             2,
             cv2.LINE_AA,
         )
-
-        # Mark approximate center
         center_alt = (min_alt + max_alt) / 2.0
         center_az = (min_az + max_az) / 2.0
         cx, cy = to_xy(center_alt, center_az)
@@ -1314,32 +1459,33 @@ def main():
                 help="Expected size of circular objects in your photo. Auto analyzes the image; Close-up for large glasses/plates; Wide for distant or small objects",
             )
 
-            quality_threshold = st.slider(
-                "Detection Sensitivity",
-                min_value=0.05,
-                max_value=0.35,
-                value=0.10,
-                step=0.01,
-                help="Lower finds more circles; higher is stricter.",
-            )
+            with st.expander("Advanced settings"):
+                quality_threshold = st.slider(
+                    "Detection Sensitivity",
+                    min_value=0.05,
+                    max_value=0.35,
+                    value=0.10,
+                    step=0.01,
+                    help="Lower finds more circles; higher is stricter.",
+                )
 
-            num_regions = st.slider(
-                "Sky Regions",
-                min_value=50,
-                max_value=500,
-                value=100,
-                step=10,
-                help="Higher = better coverage, slower.",
-            )
+                num_regions = st.slider(
+                    "Search thoroughness",
+                    min_value=50,
+                    max_value=500,
+                    value=100,
+                    step=10,
+                    help="Number of sky regions to sample. Higher = better coverage but slower.",
+                )
 
-            radius_deg = st.slider(
-                "Sky Window (°)",
-                min_value=10,
-                max_value=40,
-                value=20,
-                step=1,
-                help="Angular radius per sampled sky window.",
-            )
+                radius_deg = st.slider(
+                    "Search area size (°)",
+                    min_value=10,
+                    max_value=40,
+                    value=20,
+                    step=1,
+                    help="Angular radius of each sampled sky region in degrees.",
+                )
 
             # Star brightness control moved to Viewer section for easier adjustment
             star_brightness = st.session_state.get("star_brightness", 1.0)
@@ -1349,6 +1495,12 @@ def main():
             )
 
         st.caption("Changes apply when Run is clicked. Auto-runs once on upload.")
+
+        if st.session_state.uploaded_image is not None:
+            st.divider()
+            if st.button("New image", use_container_width=True):
+                reset_pipeline_state(clear_image=True)
+                st.rerun()
 
     # Live feed so users see stages as soon as they are ready
     # Once processing finishes, we hide this section to keep the viewer at the top.
@@ -1406,7 +1558,7 @@ def main():
         st.subheader("Viewer")
 
         # Layer controls in main area
-        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([2, 1, 1, 1])
+        ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
         available_backgrounds = st.session_state.active_backgrounds or ["Black"]
 
         def _on_bg_change():
@@ -1439,16 +1591,7 @@ def main():
         )
         st.session_state.show_stars = show_stars_toggle
 
-        # Lines data file (constellation_lines.json) is not yet available.
-        # Disable toggle until the file is added in a future release.
-        lines_available = False
-        show_constellation_lines = ctrl4.checkbox(
-            "Lines",
-            value=st.session_state.show_constellation_lines,
-            disabled=not (st.session_state.matches_ready and lines_available),
-            help="Constellation lines not yet available (requires constellation_lines.json).",
-        )
-        st.session_state.show_constellation_lines = show_constellation_lines
+        show_constellation_lines = False
 
         ctrl5, ctrl6 = st.columns([1, 1])
 
@@ -1492,6 +1635,75 @@ def main():
                 st.session_state.current_match_index
             ]
 
+        # Show constellation name, match info, and navigation above the image
+        constellation_name = ""
+        if active_match is not None:
+            constellation_name = "Unknown region"
+            info = active_match.get("constellation_info")
+            if info and info.get("full_name"):
+                constellation_name = info["full_name"]
+            elif active_match.get("constellation"):
+                constellation_name = active_match["constellation"]
+
+            match_total = len(st.session_state.matches)
+            match_idx = st.session_state.current_match_index + 1
+            prev_disabled = match_idx == 1
+            next_disabled = match_idx >= match_total
+
+            # Use pre-computed visual_hits (circles containing a star in
+            # image space), falling back to recomputation if not cached.
+            total_circles = len(st.session_state.circles) if st.session_state.circles is not None else 0
+            visual_hits = active_match.get("visual_hits")
+            if visual_hits is None:
+                circles = st.session_state.circles
+                visual_hits = 0
+                tp = active_match.get("target_positions")
+                if circles is not None and tp is not None and len(tp):
+                    simg = apply_inverse_transform(
+                        tp, active_match["scale"], active_match["rotation"],
+                        active_match["translation"],
+                    )
+                    for cx, cy, cr in circles:
+                        d = np.sqrt((simg[:, 0] - cx) ** 2 + (simg[:, 1] - cy) ** 2)
+                        if np.any(d <= cr):
+                            visual_hits += 1
+
+            if total_circles > 0:
+                quality_pct = int(100 * visual_hits / total_circles)
+            else:
+                quality_pct = 0
+            if quality_pct >= 60:
+                quality_color = "#6fffe9"
+                quality_label = "Strong"
+            elif quality_pct >= 30:
+                quality_color = "#ffd866"
+                quality_label = "Moderate"
+            else:
+                quality_color = "#ff6b6b"
+                quality_label = "Weak"
+
+            prev_col, name_col, next_col = st.columns([1, 4, 1])
+            if prev_col.button(
+                "← Prev", disabled=prev_disabled, use_container_width=True
+            ):
+                st.session_state.current_match_index -= 1
+                st.rerun()
+            name_col.markdown(
+                f"<div style='text-align:center; padding-top:4px;'>"
+                f"<strong style='font-size:1.3rem;'>{constellation_name}</strong>"
+                f"<br/><span style='color:#9ba3b4; font-size:0.85rem;'>"
+                f"Match {match_idx}/{match_total} · "
+                f"{visual_hits}/{total_circles} circles matched · "
+                f"<span style='color:{quality_color};'>{quality_label}</span>"
+                f"</span></div>",
+                unsafe_allow_html=True,
+            )
+            if next_col.button(
+                "Next →", disabled=next_disabled, use_container_width=True
+            ):
+                st.session_state.current_match_index += 1
+                st.rerun()
+
         # Render main image
         if active_match is not None:
             unified = render_unified_view(
@@ -1504,6 +1716,15 @@ def main():
                 show_lines=bool(show_constellation_lines),
             )
             st.image(unified, use_container_width=True)
+            # Download button for the rendered result
+            _buf = io.BytesIO()
+            Image.fromarray(unified).save(_buf, format="PNG")
+            st.download_button(
+                "Download image",
+                data=_buf.getvalue(),
+                file_name=f"constellation_{constellation_name.replace(' ', '_').lower()}.png",
+                mime="image/png",
+            )
         else:
             # Circles-only or background-only view
             base_bg = st.session_state.background_cache.get(background_mode)
@@ -1528,42 +1749,80 @@ def main():
                 )
             st.image(canvas, use_container_width=True)
 
-        # Navigation for matches
+        # Starmap and details (only when matches are ready)
         if st.session_state.matches_ready and st.session_state.matches:
             st.divider()
-            nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 1])
-            prev_disabled = st.session_state.current_match_index == 0
-            next_disabled = (
-                st.session_state.current_match_index
-                >= len(st.session_state.matches) - 1
-            )
-
-            if nav_col1.button(
-                "← Previous", disabled=prev_disabled, use_container_width=True
-            ):
-                st.session_state.current_match_index -= 1
-                st.rerun()
-
-            nav_col2.markdown(
-                f"<div style='text-align: center; padding: 12px; font-weight: 700;'>{st.session_state.current_match_index + 1} / {len(st.session_state.matches)}</div>",
-                unsafe_allow_html=True,
-            )
-
-            if nav_col3.button(
-                "Next →", disabled=next_disabled, use_container_width=True
-            ):
-                st.session_state.current_match_index += 1
-                st.rerun()
-
             # Mini starmap with footprint
             st.subheader("Mini starmap")
+
+            # Geolocation: auto-detect user position
+            if "geo_lat" not in st.session_state:
+                st.session_state.geo_lat = None
+                st.session_state.geo_lon = None
+            # Flag: when True, ignore geolocation returns (user chose constellation center)
+            if "center_on_constellation" not in st.session_state:
+                st.session_state.center_on_constellation = False
+
+            geo_col, center_col, _ = st.columns([1, 1, 1])
+            with geo_col:
+                st.caption("Your location")
+                location = geolocation()
+            with center_col:
+                st.caption("Reset view")
+                if st.button("Center on constellation"):
+                    if active_match is not None:
+                        st.session_state.center_on_constellation = True
+                        st.session_state.geo_lat = None
+                        st.session_state.geo_lon = None
+                        st.session_state.pop("starmap_lat", None)
+                        st.session_state.pop("starmap_lon", None)
+                        st.rerun()
+
+            # Accept geolocation only once (first return).  After the user
+            # clicks "Center on constellation" we remember the last geo
+            # coordinates so we can tell a genuine *new* click apart from
+            # the cached return the component sends on every render.
+            if isinstance(location, dict) and location.get("latitude") is not None:
+                _loc_lat = float(location["latitude"])
+                _loc_lon = float(location["longitude"])
+                _last = st.session_state.get("_last_geo")
+                _is_new = _last is None or (
+                    abs(_last[0] - _loc_lat) > 0.001
+                    or abs(_last[1] - _loc_lon) > 0.001
+                )
+                if st.session_state.geo_lat is None and (
+                    not st.session_state.center_on_constellation or _is_new
+                ):
+                    st.session_state.geo_lat = _loc_lat
+                    st.session_state.geo_lon = _loc_lon
+                    st.session_state._last_geo = (_loc_lat, _loc_lon)
+                    st.session_state.center_on_constellation = False
+                    st.session_state.pop("starmap_lat", None)
+                    st.session_state.pop("starmap_lon", None)
+                    st.rerun()
+
+            # Default to the observer position that centres the matched region at zenith.
+            if st.session_state.geo_lat is not None:
+                default_lat = st.session_state.geo_lat
+                default_lon = st.session_state.geo_lon
+            elif active_match is not None:
+                _now = Time(datetime.utcnow())
+                _gst_deg = _now.sidereal_time("mean", longitude=0).deg
+                default_lat = float(active_match["dec"])
+                # longitude where RA is on the meridian right now
+                default_lon = (active_match["ra"] - _gst_deg + 180) % 360 - 180
+                default_lon = float(default_lon)
+            else:
+                default_lat = 0.0
+                default_lon = 0.0
+
             map_col, info_col = st.columns([1, 1])
 
             with map_col:
                 sky_map = render_local_sky_map(
                     active_match,
-                    latitude=float(st.session_state.get("starmap_lat", 0.0)),
-                    longitude=float(st.session_state.get("starmap_lon", 0.0)),
+                    latitude=float(st.session_state.get("starmap_lat", default_lat)),
+                    longitude=float(st.session_state.get("starmap_lon", default_lon)),
                     star_color_mode=str(st.session_state.star_color_mode),
                 )
                 if sky_map is not None:
@@ -1574,7 +1833,7 @@ def main():
                     "Latitude (°)",
                     min_value=-90.0,
                     max_value=90.0,
-                    value=0.0,
+                    value=default_lat,
                     step=0.1,
                     format="%.2f",
                     key="starmap_lat",
@@ -1583,49 +1842,172 @@ def main():
                     "Longitude (°)",
                     min_value=-180.0,
                     max_value=180.0,
-                    value=0.0,
+                    value=default_lon,
                     step=0.1,
                     format="%.2f",
                     key="starmap_lon",
                 )
 
             with info_col:
-                st.markdown(
-                    """
-**How to read this map:**
+                # --- Mini world map (simplified coastlines) ---
+                _map_lat = float(st.session_state.get("starmap_lat", default_lat))
+                _map_lon = float(st.session_state.get("starmap_lon", default_lon))
+                world_w, world_h = 720, 360
+                world_map = np.full((world_h, world_w, 3), 25, dtype=np.uint8)
 
-This is a **polar projection** of your local sky at the given location and current time.
+                def _ll2px(lon, lat):
+                    """Convert lon/lat to pixel coords on the equirectangular map."""
+                    x = int((lon + 180) / 360 * world_w)
+                    y = int((90 - lat) / 180 * world_h)
+                    return [x, y]
 
+                # Simplified continent polygons (lon, lat pairs)
+                _continents = {
+                    "africa": [
+                        (-17,15),(-12,8),(-8,5),(1,5),(10,4),(10,1),(9,-3),
+                        (12,-6),(14,-11),(17,-16),(20,-23),(27,-34),(33,-34),
+                        (36,-27),(40,-16),(43,-12),(50,-11),(51,-1),(44,3),
+                        (42,11),(44,12),(43,17),(35,20),(33,31),(32,37),
+                        (11,37),(10,35),(0,35),(-5,36),(-8,32),(-13,28),
+                        (-17,22),(-17,15),
+                    ],
+                    "europe": [
+                        (-10,36),(-9,43),(-2,43),(2,48),(-5,48),(-10,52),
+                        (-6,55),(0,51),(2,51),(5,54),(8,54),(6,58),(11,58),
+                        (12,56),(15,54),(19,55),(24,55),(22,58),(20,60),
+                        (18,63),(15,67),(20,69),(28,71),(32,70),(40,68),
+                        (44,65),(42,60),(44,55),(40,50),(35,46),(30,41),
+                        (28,41),(26,42),(22,40),(20,39),(15,38),(12,38),
+                        (10,44),(7,44),(3,43),(3,40),(-3,37),(-10,36),
+                    ],
+                    "asia": [
+                        (26,42),(30,41),(35,46),(40,50),(44,55),(42,60),
+                        (44,65),(50,65),(55,68),(60,72),(70,73),(80,72),
+                        (90,70),(100,73),(110,72),(120,73),(135,72),(140,68),
+                        (142,65),(145,60),(143,55),(140,52),(135,50),(135,45),
+                        (138,40),(140,38),(135,34),(130,32),(128,35),(126,38),
+                        (122,40),(120,38),(118,33),(120,28),(120,22),(115,18),
+                        (110,16),(108,14),(105,10),(100,13),(98,16),(98,20),
+                        (95,22),(88,22),(85,26),(80,28),(75,25),(72,22),
+                        (68,24),(67,26),(62,25),(57,27),(53,28),(50,30),
+                        (48,30),(44,37),(40,38),(36,38),(33,37),(32,31),
+                        (35,20),(33,31),(32,37),(30,41),(26,42),
+                    ],
+                    "north_america": [
+                        (-170,63),(-168,66),(-162,67),(-155,71),(-145,70),
+                        (-140,70),(-135,69),(-128,72),(-120,75),(-100,76),
+                        (-85,77),(-75,75),(-65,72),(-60,67),(-65,62),
+                        (-64,56),(-60,52),(-63,47),(-67,44),(-70,43),
+                        (-75,40),(-80,32),(-82,25),(-87,25),(-90,29),
+                        (-95,28),(-97,26),(-100,22),(-105,20),(-110,23),
+                        (-115,28),(-117,33),(-120,35),(-122,38),(-124,42),
+                        (-125,48),(-127,52),(-130,55),(-135,58),(-140,59),
+                        (-147,60),(-152,58),(-155,59),(-160,60),(-170,63),
+                    ],
+                    "south_america": [
+                        (-80,10),(-77,8),(-73,12),(-68,12),(-62,11),
+                        (-60,8),(-55,6),(-52,4),(-50,2),(-50,-2),
+                        (-45,-5),(-42,-8),(-38,-10),(-35,-12),(-38,-18),
+                        (-40,-22),(-42,-23),(-46,-24),(-48,-28),(-50,-30),
+                        (-52,-33),(-55,-35),(-58,-38),(-65,-42),(-68,-47),
+                        (-68,-52),(-70,-55),(-72,-50),(-74,-46),(-74,-42),
+                        (-72,-37),(-71,-30),(-70,-25),(-70,-18),(-75,-15),
+                        (-76,-10),(-78,-5),(-80,0),(-80,5),(-80,10),
+                    ],
+                    "australia": [
+                        (115,-35),(115,-32),(118,-32),(121,-34),(126,-34),
+                        (130,-32),(132,-30),(133,-26),(136,-25),(137,-22),
+                        (137,-18),(136,-14),(134,-12),(131,-12),(129,-15),
+                        (127,-14),(124,-16),(122,-18),(118,-20),(115,-22),
+                        (114,-26),(114,-30),(115,-35),
+                    ],
+                    "greenland": [
+                        (-55,60),(-48,60),(-42,64),(-38,68),(-20,74),
+                        (-18,77),(-20,80),(-30,82),(-42,83),(-50,82),
+                        (-55,80),(-58,76),(-55,72),(-52,68),(-55,60),
+                    ],
+                }
+
+                # Draw grid lines (subtle)
+                for g_lon in range(-180, 181, 30):
+                    x_g = int((g_lon + 180) / 360 * world_w)
+                    if 0 <= x_g < world_w:
+                        world_map[:, x_g] = 32
+                for g_lat in range(-90, 91, 30):
+                    y_g = int((90 - g_lat) / 180 * world_h)
+                    if 0 <= y_g < world_h:
+                        world_map[y_g, :] = 32
+
+                # Draw filled continents
+                land_color = (55, 55, 55)
+                coast_color = (75, 75, 75)
+                for _name, coords in _continents.items():
+                    pts = np.array(
+                        [_ll2px(lon, lat) for lon, lat in coords], dtype=np.int32
+                    )
+                    cv2.fillPoly(world_map, [pts], land_color)
+                    cv2.polylines(world_map, [pts], True, coast_color, 1)
+
+                # Position marker
+                px = int((_map_lon + 180) / 360 * world_w) % world_w
+                py = int((90 - _map_lat) / 180 * world_h)
+                py = max(0, min(world_h - 1, py))
+                cv2.circle(world_map, (px, py), 6, (80, 180, 255), -1)
+                cv2.circle(world_map, (px, py), 7, (200, 220, 255), 1)
+
+                st.image(world_map, use_container_width=True)
+
+                st.caption(
+                    "Polar projection of your local sky. "
+                    "Outer circle = horizon, center = zenith. "
+                    "Yellow star = matched region center, blue box = image footprint."
+                )
+                with st.expander("How to read this map"):
+                    st.markdown(
+                        """
 - **Outer circle** = horizon (0° altitude)
 - **Center** = directly overhead (zenith, 90° altitude)
 - **N/S/E/W** = compass directions
 
 **Map symbols:**
-- ⭐ **Yellow star marker** = center of your matched constellation region
-- 🔷 **Blue rectangle** = the sky area ('footprint') corresponding to your uploaded image
-
-**Why is the rectangle skewed?**
-The polar projection distorts shapes, especially near the horizon. This is normal.
-
-**Why are there more stars here than in the viewer?**
-This map shows the brightest stars from the full catalog. The main viewer filters to show only stars within your matched region.
+- Yellow star marker = center of your matched constellation region
+- Blue rectangle = the sky area corresponding to your uploaded image
 
 **How to find your constellation:**
-1. Set your latitude and longitude
-2. Note which compass direction (N/S/E/W) the yellow marker is closest to
+1. Set your latitude and longitude (or use the location button)
+2. Note which compass direction the yellow marker is closest to
 3. Face that direction outside
 4. Look up at roughly the indicated altitude (distance from edge to center)
-5. Find the star pattern matching your image!
 """
-                )
-
-        # Reset button
-        if st.button("Reset", use_container_width=True):
-            reset_pipeline_state(clear_image=True)
-            st.rerun()
+                    )
 
     else:
-        st.info("Upload an image to get started. The pipeline will run automatically.")
+        # Empty state: onboarding hero
+        st.markdown(
+            """
+<div style="text-align:center; padding: 3rem 1rem 2rem;">
+    <div style="font-size:3rem; margin-bottom:0.5rem;">&#9733;</div>
+    <h2 style="margin:0 0 0.5rem;">Turn your table into a constellation</h2>
+    <p style="color:#9ba3b4; max-width:480px; margin:0 auto 2rem;">
+        Upload a photo of glasses, bottles, or plates on a table.
+        The app detects the circular objects and matches their pattern
+        to real star constellations visible from Earth.
+    </p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+        step1, step2, step3 = st.columns(3)
+        with step1:
+            st.markdown("**1. Upload**")
+            st.caption("Take a photo of your table from above and upload it using the sidebar.")
+        with step2:
+            st.markdown("**2. Detect**")
+            st.caption("Circular objects are detected automatically using computer vision.")
+        with step3:
+            st.markdown("**3. Match**")
+            st.caption("The pattern is matched against thousands of star regions to find your constellation.")
 
 
 if __name__ == "__main__":

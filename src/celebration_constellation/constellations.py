@@ -133,13 +133,14 @@ class ConstellationCatalog:
         print("Downloading IAU constellation boundaries from VizieR...")
 
         try:
-            # Query IAU constellation boundaries (VI/49)
+            # Query IAU constellation boundaries (VI/49/constbnd)
+            # Uses ICRS J2000 coordinates from the constbnd table
             vizier = Vizier(
-                columns=["Constellation", "RAhr", "DEdeg"],
+                columns=["_RA.icrs", "_DE.icrs", "cst"],
                 row_limit=-1,
             )
 
-            catalog_list = vizier.get_catalogs("VI/49")
+            catalog_list = vizier.get_catalogs("VI/49/constbnd")
 
             if not catalog_list:
                 print("Warning: No constellation boundary data returned from VizieR")
@@ -150,17 +151,11 @@ class ConstellationCatalog:
             # Clean and standardize column names
             catalog = catalog.rename(
                 columns={
-                    "Constellation": "constellation",
-                    "RAhr": "ra_hours",
-                    "DEdeg": "dec_deg",
+                    "cst": "constellation",
+                    "_RA.icrs": "ra",
+                    "_DE.icrs": "dec",
                 }
             )
-
-            # Convert RA from hours to degrees
-            catalog["ra"] = catalog["ra_hours"] * 15.0  # 1 hour = 15 degrees
-
-            # Use Dec directly
-            catalog["dec"] = catalog["dec_deg"]
 
             # Remove any rows with missing data
             catalog = catalog.dropna(subset=["constellation", "ra", "dec"])
@@ -199,10 +194,8 @@ class ConstellationCatalog:
         Returns:
             Array of polygon vertices (ra, dec) with polygon closed
         """
-        # Sort by RA to get proper polygon order
-        boundary_points = boundary_points.sort_values("ra")
-
-        # Extract coordinates
+        # Vertices are already in correct boundary-tracing order from the
+        # catalog — do NOT sort by RA as that destroys concave polygons.
         polygon = boundary_points[["ra", "dec"]].values
 
         # Close the polygon if not already closed
@@ -219,7 +212,8 @@ class ConstellationCatalog:
     ) -> bool:
         """Test if point is inside polygon using ray-casting algorithm.
 
-        Adapted for spherical coordinates with RA wrap-around handling.
+        Shifts all RA coordinates so the test point is near the center of
+        the range, avoiding wrap-around artifacts at the 0/360 boundary.
 
         Args:
             ra: Right ascension in degrees (0-360)
@@ -230,47 +224,39 @@ class ConstellationCatalog:
             True if point is inside polygon, False otherwise
         """
         n = len(polygon)
+        if n < 3:
+            return False
         inside = False
 
-        # Normalize RA to [0, 360)
-        ra = ra % 360
+        # Shift all RA values so the test point sits at 180°.
+        # This eliminates wrap-around issues for the ray-casting test.
+        shift = 180.0 - (ra % 360)
+        ra_s = 180.0  # shifted test RA
+        poly_ra = ((polygon[:, 0] + shift) % 360)
+        poly_dec = polygon[:, 1]
 
-        # Ray-casting algorithm
-        p1_ra, p1_dec = polygon[0]
-        for i in range(1, n + 1):
-            p2_ra, p2_dec = polygon[i % n]
+        j = n - 1
+        for i in range(n):
+            yi, yj = poly_dec[i], poly_dec[j]
+            xi, xj = poly_ra[i], poly_ra[j]
 
-            # Handle RA wrap-around
-            # If polygon edge crosses 0°/360° boundary, shift point and polygon
-            if abs(p2_ra - p1_ra) > 180:
-                if p1_ra > 180:
-                    p1_ra -= 360
-                if p2_ra > 180:
-                    p2_ra -= 360
-                if ra > 180:
-                    ra_test = ra - 360
-                else:
-                    ra_test = ra
-            else:
-                ra_test = ra
+            # Skip edges that span > 180° in shifted RA (broken wrap)
+            if abs(xi - xj) > 180:
+                j = i
+                continue
 
-            # Standard ray-casting test
-            if dec > min(p1_dec, p2_dec):
-                if dec <= max(p1_dec, p2_dec):
-                    if ra_test <= max(p1_ra, p2_ra):
-                        if p1_dec != p2_dec:
-                            x_inters = (dec - p1_dec) * (p2_ra - p1_ra) / (
-                                p2_dec - p1_dec
-                            ) + p1_ra
-                            if p1_ra == p2_ra or ra_test <= x_inters:
-                                inside = not inside
-
-            p1_ra, p1_dec = polygon[i % n]
+            if ((yi > dec) != (yj > dec)) and (
+                ra_s < (xj - xi) * (dec - yi) / (yj - yi) + xi
+            ):
+                inside = not inside
+            j = i
 
         return inside
 
     def identify_constellation(self, ra: float, dec: float) -> Optional[str]:
         """Identify constellation containing the given celestial coordinates.
+
+        Uses Astropy's authoritative IAU constellation boundary lookup.
 
         Args:
             ra: Right ascension in degrees (0-360)
@@ -278,7 +264,6 @@ class ConstellationCatalog:
 
         Returns:
             Constellation name (3-letter IAU abbreviation) or None if not found
-            Returns None if constellation boundaries are unavailable (offline mode)
 
         Example:
             >>> catalog = ConstellationCatalog()
@@ -286,20 +271,14 @@ class ConstellationCatalog:
             >>> print(constellation)
             Ori
         """
-        boundaries = self.load_boundaries()
+        try:
+            from astropy.coordinates import SkyCoord
+            from astropy import units as u
 
-        # Return None if boundaries unavailable (offline mode)
-        if boundaries is None:
+            coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+            return coord.get_constellation(short_name=True)
+        except Exception:
             return None
-
-        # Group by constellation
-        for constellation_name, group in boundaries.groupby("constellation"):
-            polygon = self._prepare_polygon(group)
-
-            if self._point_in_polygon(ra, dec, polygon):
-                return constellation_name
-
-        return None
 
     def get_constellation_info(self, name: Optional[str]) -> Optional[dict]:
         """Get detailed information about a constellation.
